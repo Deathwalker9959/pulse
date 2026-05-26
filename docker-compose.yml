@@ -1,0 +1,130 @@
+version: "3.9"
+
+# SCALE: Add replicas: N under deploy.replicas (with Swarm/K8s) for
+# horizontal scaling. Ingestion: scale with consumer groups on Redis Streams.
+# API: scale with multiple instances; each gets its own consumer in api-workers group.
+# ClickHouse: move to distributed cluster or ClickHouse Cloud for >1B rows/day.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # ClickHouse — analytical event store (required)
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.5
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DB: default
+    ports:
+      - "8123:8123"  # HTTP interface (API + admin)
+      - "9000:9000"  # Native protocol
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Redis 8 — stream bus + cache (required)
+  # Persistence: appendonly ensures no data loss on restart.
+  # SCALE: Redis Cluster when single-node throughput (~1M msg/s) is approached.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Ingestion service — polls OpenSky, writes to ClickHouse + Redis Streams
+  # ---------------------------------------------------------------------------
+  ingestion:
+    build:
+      context: ./ingestion
+      dockerfile: Dockerfile
+      # BuildKit cache mount used inside Dockerfile; no extra args needed here.
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      # Optional: set for higher OpenSky rate limits
+      OPENSKY_USER: "${OPENSKY_USER:-}"
+      OPENSKY_PASSWORD: "${OPENSKY_PASSWORD:-}"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # API service — FastAPI, WebSocket, Redis cache
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "8000:8000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Frontend — React + Vite, served by nginx
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  clickhouse_data:
+  redis_data:
