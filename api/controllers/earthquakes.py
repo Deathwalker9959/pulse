@@ -126,7 +126,7 @@ async def get_heatmap(*, redis, from_ts: datetime, to_ts: datetime, resolution: 
             avg(magnitude) AS avg_magnitude,
             avg(latitude) AS centroid_lat,
             avg(longitude) AS centroid_lon
-        FROM earthquakes_raw
+        FROM earthquakes_raw FINAL
         WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
         GROUP BY h3_index
         ORDER BY event_count DESC
