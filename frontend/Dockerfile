@@ -1,20 +1,11 @@
-# syntax=docker/dockerfile:1
-
-# Stage 1: build
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS build
 WORKDIR /app
-
-# Layer: deps (cached until package.json / package-lock.json changes)
-COPY package.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm install
-
-# Layer: source
+COPY package.json .
+COPY package-lock.json .
+RUN npm ci
 COPY . .
 RUN npm run build
 
-# Stage 2: serve static files with nginx
-FROM nginx:alpine AS runner
-COPY --from=builder /app/dist /usr/share/nginx/html
+FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+COPY --from=build /app/dist /usr/share/nginx/html
