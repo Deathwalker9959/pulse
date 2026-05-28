@@ -1,21 +1,3 @@
-"""
-Ingestion controller — orchestrates the poll → stream → store pipeline.
-
-Flow per cycle:
-  1. fetch_states() → list[FlightState]
-  2. Publish raw states to Redis Stream pulse:flights
-  3. write_flights() → ClickHouse flights_raw
-  4. detect_anomalies() → list[AnomalyEvent]
-  5. For each anomaly:
-       a. write_anomaly() → ClickHouse (weather fields null)
-       b. Publish to pulse:anomalies stream
-       c. enrich_with_weather() → updated AnomalyEvent
-       d. update_anomaly_weather() → ClickHouse (latest row)
-       e. Publish enriched event to pulse:alerts stream
-
-SCALE: at higher volumes, steps 1–3 and 4–5 can be separate services
-consuming the pulse:flights stream via consumer groups.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -26,108 +8,88 @@ import clickhouse_connect
 import httpx
 import redis.asyncio as aioredis
 
-from controllers.anomaly import detect_anomalies, enrich_with_weather
-from models import AnomalyEvent
-from poller import fetch_states
-from writer import update_anomaly_weather, write_anomaly, write_flights
+from controllers.anomaly import detect_anomalies
+from models import AnomalyEvent, EarthquakeEvent
+from poller import POLL_INTERVAL, fetch_events
+from writer import write_anomalies, write_earthquakes
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "clickhouse")
-CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-CLICKHOUSE_DB = os.getenv("CLICKHOUSE_DB", "default")
-CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "default")
-CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
-OPENSKY_USER = os.getenv("OPENSKY_USER", "")
-OPENSKY_PASSWORD = os.getenv("OPENSKY_PASSWORD", "")
-
-STREAM_FLIGHTS = "pulse:flights"
-STREAM_ANOMALIES = "pulse:anomalies"
+STREAM_EVENTS = "pulse:events"
 STREAM_ALERTS = "pulse:alerts"
+SEEN_HASH = "pulse:seen-events"
 
 
-async def _publish_flights(redis: aioredis.Redis, states) -> None:
-    if not states:
+async def _new_or_revised(redis: aioredis.Redis, events: list[EarthquakeEvent]) -> list[EarthquakeEvent]:
+    fresh: list[EarthquakeEvent] = []
+    pipe = redis.pipeline()
+    for event in events:
+        pipe.hget(SEEN_HASH, event.event_id)
+    previous = await pipe.execute()
+
+    pipe = redis.pipeline()
+    for event, stored in zip(events, previous):
+        updated = event.updated.isoformat()
+        stored_text = stored.decode() if isinstance(stored, bytes) else stored
+        if stored_text != updated:
+            fresh.append(event)
+            pipe.hset(SEEN_HASH, event.event_id, updated)
+    if fresh:
+        pipe.expire(SEEN_HASH, 7 * 24 * 3600)
+        await pipe.execute()
+    return fresh
+
+
+async def _publish_events(redis: aioredis.Redis, events: list[EarthquakeEvent]) -> None:
+    if not events:
         return
     pipe = redis.pipeline()
-    for s in states:
-        pipe.xadd(STREAM_FLIGHTS, {"data": s.model_dump_json()}, maxlen=50_000, approximate=True)
+    for event in events:
+        pipe.xadd(STREAM_EVENTS, {"data": event.model_dump_json()}, maxlen=50_000, approximate=True)
     await pipe.execute()
 
 
-async def _publish_event(
-    redis: aioredis.Redis, stream: str, event: AnomalyEvent, maxlen: int = 10_000,
-) -> None:
-    await redis.xadd(stream, {"data": event.model_dump_json()}, maxlen=maxlen, approximate=True)
+async def _publish_alerts(redis: aioredis.Redis, events: list[AnomalyEvent]) -> None:
+    if not events:
+        return
+    pipe = redis.pipeline()
+    for event in events:
+        pipe.xadd(STREAM_ALERTS, {"data": event.model_dump_json()}, maxlen=10_000, approximate=True)
+    await pipe.execute()
 
 
-async def _process_anomaly(
-    event: AnomalyEvent,
-    ch_client,
-    redis: aioredis.Redis,
-    http: httpx.AsyncClient,
-) -> None:
-    await write_anomaly(ch_client, event)
-    await _publish_event(redis, STREAM_ANOMALIES, event)
-
-    try:
-        enriched = await enrich_with_weather(event, http)
-        await update_anomaly_weather(ch_client, enriched)
-        await _publish_event(redis, STREAM_ALERTS, enriched, maxlen=5_000)
-        logger.info(
-            "anomaly %s enriched: %s, wind %.1fkts",
-            event.anomaly_type, enriched.weather_condition, enriched.weather_wind_kts or 0,
-        )
-    except Exception as exc:
-        # Weather enrichment is best-effort; publish un-enriched alert as fallback.
-        logger.warning("weather enrichment failed for %s: %s — publishing without weather", event.event_id, exc)
-        await _publish_event(redis, STREAM_ALERTS, event, maxlen=5_000)
-
-
-async def run_ingestion_loop() -> None:
-    """Main ingestion loop — runs until cancelled."""
-    redis = aioredis.from_url(REDIS_URL, decode_responses=False)
-    ch_client = await clickhouse_connect.get_async_client(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        database=CLICKHOUSE_DB,
-        username=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
+async def run() -> None:
+    redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=False)
+    clickhouse = await clickhouse_connect.get_async_client(
+        host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+        port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+        database=os.getenv("CLICKHOUSE_DB", "default"),
+        username=os.getenv("CLICKHOUSE_USER", "default"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
     )
-    http = httpx.AsyncClient(
-        headers={"User-Agent": "PULSE/1.0 (open-source assessment project)"},
-        follow_redirects=True,
-    )
-
-    logger.info("ingestion loop started")
+    http = httpx.AsyncClient(headers={"User-Agent": "PULSE earthquake assessment app"}, follow_redirects=True)
+    logger.info("ingestion started; polling USGS every %ss", POLL_INTERVAL)
     try:
         while True:
             try:
-                states = await fetch_states(
-                    http,
-                    username=OPENSKY_USER,
-                    password=OPENSKY_PASSWORD,
-                )
-                await asyncio.gather(
-                    write_flights(ch_client, states),
-                    _publish_flights(redis, states),
-                )
-                anomalies = await detect_anomalies(states, redis)
-                if anomalies:
-                    await asyncio.gather(*[
-                        _process_anomaly(ev, ch_client, redis, http)
-                        for ev in anomalies
-                    ])
+                fetched = await fetch_events(http)
+                events = await _new_or_revised(redis, fetched)
+                if events:
+                    await _publish_events(redis, events)
+                    await write_earthquakes(clickhouse, events)
+                    anomalies = await detect_anomalies(events, redis)
+                    await write_anomalies(clickhouse, anomalies)
+                    await _publish_alerts(redis, anomalies)
+                    logger.info("processed %d new/revised events and %d anomalies", len(events), len(anomalies))
+                else:
+                    logger.info("USGS poll returned no new revisions")
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                # Catch-all so the loop survives unexpected errors.
-                # @retry handles retries inside sub-functions; this covers the rest.
-                logger.error("unexpected error in ingestion cycle: %s", exc, exc_info=True)
-                await asyncio.sleep(5)
+            except Exception:
+                logger.exception("ingestion cycle failed")
+            await asyncio.sleep(POLL_INTERVAL)
     finally:
         await http.aclose()
         await redis.aclose()
-        await ch_client.close()
-        logger.info("ingestion loop stopped")
+        await clickhouse.close()
+

@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Optional
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 
 class AnomalyType(StrEnum):
-    EMERGENCY_SQUAWK = "EMERGENCY_SQUAWK"
-    ALTITUDE_DROP = "ALTITUDE_DROP"
-    SPEED_OUTLIER = "SPEED_OUTLIER"
-    DENSITY_SPIKE = "DENSITY_SPIKE"
+    SIGNIFICANT_EVENT = "SIGNIFICANT_EVENT"
+    TSUNAMI_ALERT = "TSUNAMI_ALERT"
+    TSUNAMI_RISK = "TSUNAMI_RISK"
+    MAGNITUDE_SPIKE = "MAGNITUDE_SPIKE"
+    SWARM_DETECTION = "SWARM_DETECTION"
+    DATA_QUALITY_ANOMALY = "DATA_QUALITY_ANOMALY"
+    ENERGY_BURST = "ENERGY_BURST"
+    AFTERSHOCK_CASCADE = "AFTERSHOCK_CASCADE"
+    GLOBAL_RATE_SPIKE = "GLOBAL_RATE_SPIKE"
+    SEISMIC_QUIESCENCE = "SEISMIC_QUIESCENCE"
+    B_VALUE_ANOMALY = "B_VALUE_ANOMALY"
+    DEEP_FOCUS_CLUSTER = "DEEP_FOCUS_CLUSTER"
+    FORESHOCK_SEQUENCE = "FORESHOCK_SEQUENCE"
 
 
 class Severity(StrEnum):
@@ -21,22 +29,19 @@ class Severity(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+def _anomaly_id(source_event_id: str, anomaly_type: str) -> str:
+    return hashlib.sha256(f"{source_event_id}:{anomaly_type}".encode()).hexdigest()[:36]
+
+
 class AnomalyEvent(BaseModel):
-    event_id: str = Field(default_factory=lambda: str(uuid4()))
-    detected_at: datetime = Field(default_factory=datetime.utcnow)
+    anomaly_id: str = ""
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    event_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     anomaly_type: AnomalyType
     severity: Severity
-    icao24: str
-    callsign: str = ""
+    source_event_id: str
+    source_place: str = ""
     latitude: float
     longitude: float
     detail: str
-    # Populated async after initial detection
-    weather_temp_c: Optional[float] = None
-    weather_wind_kts: Optional[float] = None
-    weather_condition: Optional[str] = None
-    weather_visibility: Optional[float] = None
-    weather_fetched_at: Optional[datetime] = None
 
-    def is_weather_enriched(self) -> bool:
-        return self.weather_fetched_at is not None

@@ -1,4 +1,5 @@
-from models.flight import FlightState
 from models.anomaly import AnomalyEvent, AnomalyType, Severity
+from models.earthquake import EarthquakeEvent
 
-__all__ = ["FlightState", "AnomalyEvent", "AnomalyType", "Severity"]
+__all__ = ["AnomalyEvent", "AnomalyType", "EarthquakeEvent", "Severity"]
+
