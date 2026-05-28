@@ -1,17 +1,16 @@
-"""FastAPI application factory."""
 from __future__ import annotations
 
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from cache import get_redis
-from controllers.alerts import alert_manager
-from views.flights import router as flights_router
-from views.stats import router as stats_router
-from views.ws import router as ws_router
+from cache import close_redis
+from db import close_client
+from views.earthquakes import anomaly_router, earthquake_router, ingestion_router
+from views.ws import alert_broadcaster, event_broadcaster, router as ws_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,31 +18,35 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-app = FastAPI(title="PULSE API", version="1.0.0")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await event_broadcaster.start()
+    await alert_broadcaster.start()
+    try:
+        yield
+    finally:
+        await event_broadcaster.stop()
+        await alert_broadcaster.stop()
+        await close_redis()
+        await close_client()
+
+
+app = FastAPI(title="PULSE Earthquake API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=["*"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
 
-app.include_router(flights_router)
-app.include_router(stats_router)
 app.include_router(ws_router)
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    redis = get_redis()
-    await alert_manager.start(redis)
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await alert_manager.stop()
+app.include_router(earthquake_router)
+app.include_router(anomaly_router)
+app.include_router(ingestion_router)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+

@@ -1,126 +1,87 @@
-"""
-Alert controller — Redis Streams consumer + WebSocket fan-out.
-
-One AlertManager instance per API process. All WebSocket connections share
-the same Redis Streams cursor, so each alert is delivered to every connected
-client (fan-out, not work-queue).
-
-SCALE: Multiple API instances each get their own consumer in the
-'api-workers' consumer group → no duplicate delivery across instances.
-Add a Redis Cluster when stream throughput exceeds single-node limits.
-"""
 from __future__ import annotations
 
-import asyncio
-import logging
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
 
-import redis.asyncio as aioredis
-
+from decorators import cached
 from db import query
-from decorators import cached, timed
-
-if TYPE_CHECKING:
-    from fastapi import WebSocket
-
-logger = logging.getLogger(__name__)
-
-STREAM_ALERTS = "pulse:alerts"
-CONSUMER_GROUP = "api-workers"
-CONSUMER_NAME = "api-0"  # unique per pod; set via env in multi-instance deploy
 
 
-class AlertManager:
-    """Manages WebSocket connections and streams alerts to all of them."""
+_OUTER_SELECT = """
+    selected_anomaly_id AS anomaly_id,
+    selected_detected_at AS detected_at,
+    selected_event_time AS event_time,
+    selected_anomaly_type AS anomaly_type,
+    selected_severity AS severity,
+    selected_source_event_id AS source_event_id,
+    selected_source_place AS source_place,
+    selected_latitude AS latitude,
+    selected_longitude AS longitude,
+    selected_detail AS detail
+"""
 
-    def __init__(self) -> None:
-        self._connections: set["WebSocket"] = set()
-        self._running = False
+_DEDUP_SELECT = """
+    argMax(anomaly_id, detected_at) AS selected_anomaly_id,
+    max(detected_at) AS selected_detected_at,
+    argMax(event_time, detected_at) AS selected_event_time,
+    anomaly_type AS selected_anomaly_type,
+    argMax(severity, detected_at) AS selected_severity,
+    source_event_id AS selected_source_event_id,
+    argMax(source_place, detected_at) AS selected_source_place,
+    argMax(latitude, detected_at) AS selected_latitude,
+    argMax(longitude, detected_at) AS selected_longitude,
+    argMax(detail, detected_at) AS selected_detail,
+    max(if(event_time > toDateTime(0), event_time, detected_at)) AS selected_sort_time
+"""
 
-    async def start(self, redis: aioredis.Redis) -> None:
-        """Create consumer group (idempotent) and start consume loop."""
-        try:
-            await redis.xgroup_create(STREAM_ALERTS, CONSUMER_GROUP, id="$", mkstream=True)
-        except Exception:
-            pass  # group already exists
-        self._running = True
-        asyncio.create_task(self._consume_loop(redis), name="alert-consume")
-        logger.info("AlertManager started, consuming %s", STREAM_ALERTS)
+_RANGE_DEDUP_SELECT = """
+    argMax(ae.anomaly_id, ae.detected_at) AS selected_anomaly_id,
+    max(ae.detected_at) AS selected_detected_at,
+    argMax(if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time), ae.detected_at) AS selected_event_time,
+    ae.anomaly_type AS selected_anomaly_type,
+    argMax(ae.severity, ae.detected_at) AS selected_severity,
+    ae.source_event_id AS selected_source_event_id,
+    argMax(ae.source_place, ae.detected_at) AS selected_source_place,
+    argMax(ae.latitude, ae.detected_at) AS selected_latitude,
+    argMax(ae.longitude, ae.detected_at) AS selected_longitude,
+    argMax(ae.detail, ae.detected_at) AS selected_detail,
+    max(if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time)) AS selected_sort_time
+"""
 
-    async def stop(self) -> None:
-        self._running = False
-
-    async def connect(self, ws: "WebSocket") -> None:
-        await ws.accept()
-        self._connections.add(ws)
-        logger.debug("WS client connected (%d total)", len(self._connections))
-
-    def disconnect(self, ws: "WebSocket") -> None:
-        self._connections.discard(ws)
-        logger.debug("WS client disconnected (%d total)", len(self._connections))
-
-    async def _consume_loop(self, redis: aioredis.Redis) -> None:
-        while self._running:
-            try:
-                results = await redis.xreadgroup(
-                    CONSUMER_GROUP,
-                    CONSUMER_NAME,
-                    {STREAM_ALERTS: ">"},
-                    count=50,
-                    block=2_000,
-                )
-                if not results:
-                    continue
-                for _stream, messages in results:
-                    for msg_id, fields in messages:
-                        payload = fields.get(b"data") or fields.get("data", b"")
-                        if payload:
-                            await self._broadcast(payload if isinstance(payload, str) else payload.decode())
-                        await redis.xack(STREAM_ALERTS, CONSUMER_GROUP, msg_id)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error("alert consume loop error: %s", exc, exc_info=True)
-                await asyncio.sleep(1)
-
-    async def _broadcast(self, message: str) -> None:
-        dead: list["WebSocket"] = []
-        for ws in list(self._connections):
-            try:
-                await ws.send_text(message)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self._connections.discard(ws)
+_RANGE_JOIN = """
+    anomaly_events AS ae
+    LEFT JOIN (
+        SELECT event_id, argMax(time, ingested_at) AS source_event_time
+        FROM earthquakes_raw
+        GROUP BY event_id
+    ) AS er ON ae.source_event_id = er.event_id
+"""
 
 
-alert_manager = AlertManager()
+@cached(ttl=10, key_prefix="anomalies:history")
+async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
+    if from_ts or to_ts:
+        t0 = from_ts or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        t1 = to_ts or datetime.now(timezone.utc)
+        return await query(f"""
+            SELECT {_OUTER_SELECT}
+            FROM (
+                SELECT {_RANGE_DEDUP_SELECT}
+                FROM {_RANGE_JOIN}
+                WHERE if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time) > toDateTime(0)
+                  AND if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time) BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+                GROUP BY ae.source_event_id, ae.anomaly_type
+            )
+            ORDER BY selected_sort_time DESC
+            LIMIT {{limit:UInt32}}
+        """, {"limit": limit, "t0": t0, "t1": t1})
+    return await query(f"""
+        SELECT {_OUTER_SELECT}
+        FROM (
+            SELECT {_DEDUP_SELECT}
+            FROM anomaly_events
+            GROUP BY source_event_id, anomaly_type
+        )
+        ORDER BY selected_sort_time DESC
+        LIMIT {{limit:UInt32}}
+    """, {"limit": limit})
 
-
-@cached(ttl=30, key_prefix="anomalies:history")
-@timed(threshold_ms=500)
-async def get_anomaly_history(
-    *,
-    redis: aioredis.Redis,
-    limit: int = 100,
-    from_ts: datetime | None = None,
-) -> list[dict]:
-    """Recent anomaly events from ClickHouse, newest first."""
-    t0 = from_ts or (datetime.now(timezone.utc) - timedelta(hours=24))
-    rows = await query(
-        """
-        SELECT
-            toString(event_id)  AS event_id,
-            detected_at, anomaly_type, severity,
-            icao24, callsign, latitude, longitude, detail,
-            weather_temp_c, weather_wind_kts, weather_condition,
-            weather_visibility, weather_fetched_at
-        FROM anomaly_events
-        WHERE detected_at >= {t0:DateTime}
-        ORDER BY detected_at DESC
-        LIMIT {limit:UInt32}
-        """,
-        params={"t0": t0, "limit": limit},
-    )
-    return rows
