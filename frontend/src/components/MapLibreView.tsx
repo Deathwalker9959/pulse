@@ -156,11 +156,13 @@ function eventPopupHTML(ev: EarthquakeEvent): string {
   );
 }
 
-function cellPopupHTML(cell: HeatmapCell): string {
-  return (
-    `<strong>${cell.event_count.toLocaleString()} events</strong><br/>` +
-    `Max M${cell.max_magnitude.toFixed(1)} · Avg M${cell.avg_magnitude.toFixed(1)}`
-  );
+function cellPopupHTML(count: number, maxMag: number, avgMag: number): string {
+  return `<strong>${count.toLocaleString()} events</strong><br/>Max M${maxMag.toFixed(1)} · Avg M${avgMag.toFixed(1)}`;
+}
+
+function addCursorPointer(map: maplibregl.Map, layerId: string): void {
+  map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
 }
 
 function anomalyPopupHTML(alert: AnomalyEvent): string {
@@ -403,10 +405,11 @@ export function MapLibreView({
         popupRef.current?.remove();
         popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
           .setLngLat(e.lngLat)
-          .setHTML(cell ? cellPopupHTML(cell) :
-            `<strong>${Number(props.event_count).toLocaleString()} events</strong><br/>` +
-            `Max M${Number(props.max_magnitude).toFixed(1)} · Avg M${Number(props.avg_magnitude).toFixed(1)}`
-          )
+          .setHTML(cellPopupHTML(
+            cell?.event_count ?? Number(props.event_count),
+            cell?.max_magnitude ?? Number(props.max_magnitude),
+            cell?.avg_magnitude ?? Number(props.avg_magnitude),
+          ))
           .addTo(map);
       });
 
@@ -421,14 +424,10 @@ export function MapLibreView({
           .addTo(map);
       });
 
-      map.on("mouseenter", "events-circles", () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", "events-circles", () => { map.getCanvas().style.cursor = "";          });
-      map.on("mouseenter", "anomaly-circles", () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", "anomaly-circles", () => { map.getCanvas().style.cursor = "";          });
-      map.on("mouseenter", "heatmap-fill",   () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", "heatmap-fill",   () => { map.getCanvas().style.cursor = "";          });
-      map.on("mouseenter", "anomaly-hex-fill", () => { map.getCanvas().style.cursor = "pointer"; });
-      map.on("mouseleave", "anomaly-hex-fill", () => { map.getCanvas().style.cursor = "";          });
+      addCursorPointer(map, "events-circles");
+      addCursorPointer(map, "anomaly-circles");
+      addCursorPointer(map, "heatmap-fill");
+      addCursorPointer(map, "anomaly-hex-fill");
 
       map.on("moveend", () => {
         const c = map.getCenter();
@@ -484,7 +483,7 @@ export function MapLibreView({
           popupRef.current?.remove();
           popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
             .setLngLat([focusLatLon.lon, focusLatLon.lat])
-            .setHTML(cellPopupHTML(cell))
+            .setHTML(cellPopupHTML(cell.event_count, cell.max_magnitude, cell.avg_magnitude))
             .addTo(map);
         }
       } catch { /* */ }

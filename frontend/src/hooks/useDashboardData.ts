@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AnomalyEvent, type BucketSize, type EarthquakeEvent, type RangePreset, websocketUrl } from "../api/client";
 import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../api/client";
+import { useWebSocket } from "./useWebSocket";
 
 const MAX_EVENTS = 500;
 
@@ -39,8 +40,6 @@ export function resolveRange(preset: RangePreset): ResolvedRange {
 
 export function useDashboardData(from?: string, to?: string, net?: string, bucket: BucketSize = "1h", rollupBucket: BucketSize = "5m") {
   const queryClient = useQueryClient();
-  const [eventsConnected, setEventsConnected] = useState(false);
-  const [alertsConnected, setAlertsConnected] = useState(false);
   const invalidateTimer = useRef<number | undefined>(undefined);
 
   const spanDays = useMemo(() => {
@@ -99,42 +98,25 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     staleTime: 120_000,
   });
 
-  useEffect(() => {
-    const socket = new WebSocket(websocketUrl("/ws/events"));
-    socket.onopen = () => setEventsConnected(true);
-    socket.onclose = () => setEventsConnected(false);
-    socket.onerror = () => socket.close();
-    socket.onmessage = event => {
-      const next = JSON.parse(event.data) as EarthquakeEvent;
-      queryClient.setQueryData<EarthquakeEvent[]>(["earthquakes", "live"], previous => {
-        const withoutDuplicate = (previous ?? []).filter(item => item.event_id !== next.event_id);
-        return [next, ...withoutDuplicate].slice(0, MAX_EVENTS);
-      });
-      if (!invalidateTimer.current) {
-        invalidateTimer.current = window.setTimeout(() => {
-          void queryClient.invalidateQueries({ queryKey: ["earthquakes"], exact: false });
-          void queryClient.invalidateQueries({ queryKey: ["ingestion"], exact: false });
-          invalidateTimer.current = undefined;
-        }, 2000);
-      }
-    };
-    return () => {
-      socket.close();
-      if (invalidateTimer.current) window.clearTimeout(invalidateTimer.current);
-    };
-  }, [queryClient]);
+  const eventsConnected = useWebSocket(websocketUrl("/ws/events"), (data) => {
+    const next = JSON.parse(data) as EarthquakeEvent;
+    queryClient.setQueryData<EarthquakeEvent[]>(["earthquakes", "live"], previous => {
+      const withoutDuplicate = (previous ?? []).filter(item => item.event_id !== next.event_id);
+      return [next, ...withoutDuplicate].slice(0, MAX_EVENTS);
+    });
+    if (!invalidateTimer.current) {
+      invalidateTimer.current = window.setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ["earthquakes"], exact: false });
+        void queryClient.invalidateQueries({ queryKey: ["ingestion"], exact: false });
+        invalidateTimer.current = undefined;
+      }, 2000);
+    }
+  });
 
-  useEffect(() => {
-    const socket = new WebSocket(websocketUrl("/ws/alerts"));
-    socket.onopen = () => setAlertsConnected(true);
-    socket.onclose = () => setAlertsConnected(false);
-    socket.onerror = () => socket.close();
-    socket.onmessage = () => {
-      void queryClient.invalidateQueries({ queryKey: ["anomalies"], exact: false });
-      void queryClient.invalidateQueries({ queryKey: ["ingestion"], exact: false });
-    };
-    return () => socket.close();
-  }, [queryClient]);
+  const alertsConnected = useWebSocket(websocketUrl("/ws/alerts"), () => {
+    void queryClient.invalidateQueries({ queryKey: ["anomalies"], exact: false });
+    void queryClient.invalidateQueries({ queryKey: ["ingestion"], exact: false });
+  });
 
   return {
     live,
