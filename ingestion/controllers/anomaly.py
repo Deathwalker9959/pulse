@@ -100,6 +100,178 @@ def _significant_events(events: list[EarthquakeEvent]) -> list[AnomalyEvent]:
     return result
 
 
+def historical_pattern_anomalies(events: list[EarthquakeEvent]) -> list[AnomalyEvent]:
+    """Stateless anomaly pass for historical/catalog backfills.
+
+    Live polling uses Redis-backed rolling state. Historical sync needs event-time windows instead,
+    otherwise YTD views only contain simple per-event signals from the backfill path.
+    """
+    positioned = sorted((event for event in events if event.has_position()), key=lambda event: event.time)
+    anomalies: dict[tuple[str, AnomalyType], AnomalyEvent] = {}
+
+    def add(event: EarthquakeEvent, anomaly_type: AnomalyType, severity: Severity, detail: str) -> None:
+        anomalies[(event.event_id, anomaly_type)] = _alert(event, anomaly_type, severity, detail)
+
+    for event in _historical_deep_focus_clusters(positioned):
+        add(
+            event,
+            AnomalyType.DEEP_FOCUS_CLUSTER,
+            Severity.WARNING,
+            f"Deep focus cluster: 3+ events >300 km depth in {_gh3(event)} within 24 hours",
+        )
+
+    for event, mainshock in _historical_aftershock_cascades(positioned):
+        add(
+            event,
+            AnomalyType.AFTERSHOCK_CASCADE,
+            Severity.WARNING,
+            f"Aftershock cascade: M{event.magnitude:.1f} event near M{mainshock.magnitude:.1f} mainshock ({mainshock.event_id})",
+        )
+
+    for event, count, z_score, cell in _historical_swarm_events(positioned):
+        add(
+            event,
+            AnomalyType.SWARM_DETECTION,
+            Severity.WARNING,
+            f"Regional swarm: {count} events/hour in geohash {cell}, {z_score:.1f} standard deviations above baseline",
+        )
+
+    for event, count, ratio, recent_max in _historical_foreshock_sequences(positioned):
+        severity = Severity.WARNING if recent_max >= 5.0 else Severity.INFO
+        add(
+            event,
+            AnomalyType.FORESHOCK_SEQUENCE,
+            severity,
+            f"Foreshock sequence in {_gh3(event)}: {count} events/24h ({ratio:.1f}x accel), max M{recent_max:.1f}.",
+        )
+
+    for event, b_value, sample_size in _historical_b_value_anomalies(positioned):
+        severity = Severity.CRITICAL if b_value < 0.5 else Severity.WARNING
+        add(
+            event,
+            AnomalyType.B_VALUE_ANOMALY,
+            severity,
+            f"B-value anomaly: b={b_value:.2f} (normal ≈ 1.0) from {sample_size} events — elevated crustal stress indicated",
+        )
+
+    return list(anomalies.values())
+
+
+def _historical_deep_focus_clusters(events: list[EarthquakeEvent]) -> list[EarthquakeEvent]:
+    result: list[EarthquakeEvent] = []
+    by_region: dict[str, list[EarthquakeEvent]] = {}
+    for event in events:
+        if event.depth_km <= 300:
+            continue
+        region = _gh3(event)
+        if not region:
+            continue
+        region_events = by_region.setdefault(region, [])
+        region_events.append(event)
+        cutoff = event.time.timestamp() - 24 * 3600
+        region_events[:] = [item for item in region_events if item.time.timestamp() >= cutoff]
+        if len(region_events) == DEEP_FOCUS_THRESHOLD:
+            result.append(event)
+    return result
+
+
+def _historical_aftershock_cascades(events: list[EarthquakeEvent]) -> list[tuple[EarthquakeEvent, EarthquakeEvent]]:
+    result: list[tuple[EarthquakeEvent, EarthquakeEvent]] = []
+    mainshocks: dict[str, list[EarthquakeEvent]] = {}
+    for event in events:
+        region = _gh3(event)
+        if not region:
+            continue
+        cutoff = event.time.timestamp() - MAINSHOCK_TTL
+        active = [mainshock for mainshock in mainshocks.get(region, []) if mainshock.time.timestamp() >= cutoff]
+        mainshocks[region] = active
+        if event.magnitude >= 5.5:
+            active.append(event)
+            continue
+        if active:
+            mainshock = max(active, key=lambda item: item.magnitude)
+            result.append((event, mainshock))
+    return result
+
+
+def _historical_swarm_events(events: list[EarthquakeEvent]) -> list[tuple[EarthquakeEvent, int, float, str]]:
+    by_cell_hour: dict[tuple[str, datetime], list[EarthquakeEvent]] = {}
+    for event in events:
+        try:
+            cell = pygeohash.encode(event.latitude, event.longitude, precision=5)
+        except Exception:
+            continue
+        hour = event.time.replace(minute=0, second=0, microsecond=0)
+        by_cell_hour.setdefault((cell, hour), []).append(event)
+
+    counts_by_cell: dict[str, list[tuple[datetime, int, list[EarthquakeEvent]]]] = {}
+    for (cell, hour), items in by_cell_hour.items():
+        counts_by_cell.setdefault(cell, []).append((hour, len(items), items))
+
+    result: list[tuple[EarthquakeEvent, int, float, str]] = []
+    for cell, buckets in counts_by_cell.items():
+        buckets.sort(key=lambda item: item[0])
+        history: list[int] = []
+        for _hour, count, items in buckets:
+            if count >= 3 and len(history) >= 4:
+                stdev = statistics.stdev(history)
+                if stdev > 0:
+                    z_score = (count - statistics.mean(history)) / stdev
+                    if z_score > 3:
+                        result.append((max(items, key=lambda item: item.magnitude), count, z_score, cell))
+            history.append(count)
+            history = history[-6:]
+    return result
+
+
+def _historical_foreshock_sequences(events: list[EarthquakeEvent]) -> list[tuple[EarthquakeEvent, int, float, float]]:
+    result: list[tuple[EarthquakeEvent, int, float, float]] = []
+    by_region: dict[str, list[EarthquakeEvent]] = {}
+    for event in events:
+        region = _gh3(event)
+        if not region:
+            continue
+        region_events = by_region.setdefault(region, [])
+        region_events.append(event)
+        cutoff_72 = event.time.timestamp() - FORESHOCK_TTL
+        region_events[:] = [item for item in region_events if item.time.timestamp() >= cutoff_72]
+        cutoff_24 = event.time.timestamp() - 24 * 3600
+        recent = [item for item in region_events if item.time.timestamp() >= cutoff_24]
+        prior = [item for item in region_events if item.time.timestamp() < cutoff_24]
+        if len(recent) < FORESHOCK_MIN_RECENT or not prior:
+            continue
+        prior_rate_24h = len(prior) / 2.0
+        ratio = len(recent) / prior_rate_24h if prior_rate_24h else 0.0
+        recent_max = max(item.magnitude for item in recent)
+        prior_mean = statistics.mean(item.magnitude for item in prior)
+        if ratio >= FORESHOCK_FREQ_RATIO and recent_max >= prior_mean + FORESHOCK_MAG_DELTA:
+            result.append((max(recent, key=lambda item: item.magnitude), len(recent), ratio, recent_max))
+    return result
+
+
+def _historical_b_value_anomalies(events: list[EarthquakeEvent]) -> list[tuple[EarthquakeEvent, float, int]]:
+    result: list[tuple[EarthquakeEvent, float, int]] = []
+    by_region: dict[str, list[EarthquakeEvent]] = {}
+    for event in events:
+        if event.magnitude < B_VALUE_MC:
+            continue
+        region = _gh3(event)
+        if not region:
+            continue
+        region_events = by_region.setdefault(region, [])
+        region_events.append(event)
+        cutoff = event.time.timestamp() - 30 * 24 * 3600
+        region_events[:] = [item for item in region_events if item.time.timestamp() >= cutoff]
+        if len(region_events) < B_VALUE_MIN_SAMPLE:
+            continue
+        mean_m = statistics.mean(item.magnitude for item in region_events)
+        if mean_m <= B_VALUE_MC:
+            continue
+        b_value = math.log10(math.e) / (mean_m - B_VALUE_MC)
+        if b_value < 0.7:
+            result.append((max(region_events, key=lambda item: item.magnitude), b_value, len(region_events)))
+    return result
+
 async def _magnitude_spike(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
     if not events:
         return []

@@ -9,7 +9,7 @@ from typing import Iterator
 import clickhouse_connect
 import httpx
 
-from controllers.anomaly import _data_quality, _significant_events
+from controllers.anomaly import _data_quality, _significant_events, _tsunami_risk, historical_pattern_anomalies
 from decorators import retry
 from models import EarthquakeEvent
 from writer import write_anomalies, write_earthquakes
@@ -65,6 +65,27 @@ async def fetch_month(http: httpx.AsyncClient, t0: date, t1: date) -> list[Earth
     return [EarthquakeEvent.from_geojson_feature(f) for f in features if f.get("id")]
 
 
+async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetime) -> int:
+    result = await clickhouse.query(
+        """
+        SELECT event_id, time, updated, latitude, longitude, depth_km, magnitude, mag_type, place,
+               event_type, status, alert, tsunami, significance, net, nst, gap
+        FROM earthquakes_raw FINAL
+        WHERE time >= {start:DateTime} AND time <= {end:DateTime}
+        ORDER BY time ASC
+        """,
+        parameters={"start": start, "end": end},
+    )
+    events = [EarthquakeEvent(**row) for row in result.named_results()]
+    if not events:
+        return 0
+    anomalies = _significant_events(events) + _tsunami_risk(events) + _data_quality(events) + historical_pattern_anomalies(events)
+    if not anomalies:
+        return 0
+    await write_anomalies(clickhouse, anomalies)
+    return len(anomalies)
+
+
 def _seconds_until_midnight() -> float:
     now = datetime.now(timezone.utc)
     tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
@@ -104,10 +125,10 @@ async def run_historical_sync() -> None:
                         continue
                     if events:
                         await write_earthquakes(clickhouse, events)
-                        anomalies = _significant_events(events) + _data_quality(events)
-                        if anomalies:
-                            await write_anomalies(clickhouse, anomalies)
-                        logger.info("  wrote %d events, %d anomalies", len(events), len(anomalies))
+                        start_dt = datetime.combine(t0, datetime.min.time(), tzinfo=timezone.utc)
+                        end_dt = datetime.combine(t1 + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc) - timedelta(seconds=1)
+                        anomaly_count = await backfill_anomalies_for_range(clickhouse, start_dt, end_dt)
+                        logger.info("  wrote %d events, %d anomalies", len(events), anomaly_count)
                     await set_last_synced(clickhouse, t1)
                 logger.info("historical sync pass complete")
             except asyncio.CancelledError:

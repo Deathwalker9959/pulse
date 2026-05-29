@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from controllers.anomaly import detect_anomalies
+from controllers.anomaly import detect_anomalies, historical_pattern_anomalies
 from models import AnomalyType, EarthquakeEvent, Severity
 
 
@@ -71,3 +71,19 @@ async def test_significant_event_detection_uses_earthquake_fields() -> None:
     assert alert.source_event_id == "us-alert"
     assert "Major impact event" in alert.detail
 
+
+
+def test_historical_pattern_anomalies_detect_catalog_backfill_patterns() -> None:
+    events = [
+        quake(event_id="deep-1", time=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc), updated=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc), magnitude=4.1, depth_km=520, latitude=-20.0, longitude=-178.0, alert="", significance=300),
+        quake(event_id="deep-2", time=datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc), updated=datetime(2026, 1, 1, 3, 1, tzinfo=timezone.utc), magnitude=4.2, depth_km=540, latitude=-20.1, longitude=-178.1, alert="", significance=310),
+        quake(event_id="deep-3", time=datetime(2026, 1, 1, 6, 0, tzinfo=timezone.utc), updated=datetime(2026, 1, 1, 6, 1, tzinfo=timezone.utc), magnitude=4.3, depth_km=560, latitude=-20.2, longitude=-178.2, alert="", significance=320),
+        quake(event_id="mainshock", time=datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc), updated=datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc), magnitude=6.2, depth_km=20, latitude=35.0, longitude=33.0, alert="", significance=600),
+        quake(event_id="aftershock", time=datetime(2026, 1, 2, 1, 0, tzinfo=timezone.utc), updated=datetime(2026, 1, 2, 1, 1, tzinfo=timezone.utc), magnitude=3.2, depth_km=18, latitude=35.1, longitude=33.1, alert="", significance=150),
+    ]
+
+    anomalies = historical_pattern_anomalies(events)
+    types = {item.anomaly_type for item in anomalies}
+
+    assert AnomalyType.DEEP_FOCUS_CLUSTER in types
+    assert AnomalyType.AFTERSHOCK_CASCADE in types

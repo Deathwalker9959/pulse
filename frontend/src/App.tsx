@@ -12,6 +12,8 @@ import {
   Stack,
   Tab,
   Tabs,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography
 } from "@mui/material";
 import PublicIcon from "@mui/icons-material/Public";
@@ -190,7 +192,7 @@ function AlertFeed({
             ))}
         </Stack>
       )}
-      <Stack spacing={1} sx={{ maxHeight: 360, overflow: "auto" }}>
+      <Stack spacing={1}>
         {visible.length === 0 ? (
           <Typography color="text.secondary" variant="body2">No signals detected yet.</Typography>
         ) : clusters
@@ -286,12 +288,17 @@ export default function App() {
   const [to, setTo] = useState(() => resolveRange("24h").to);
   const [net, setNet] = useState("");
   const [mapView, setMapView] = useState<"globe" | "map">("globe");
+  const [activeLayers, setActiveLayers] = useState<string[]>(["event-hexes", "event-nodes"]);
   const [selectedEvent, setSelectedEvent] = useState<EarthquakeEvent | null>(null);
   const [focusLatLon, setFocusLatLon] = useState<{ lat: number; lon: number } | null>(null);
   const [viewCenter, setViewCenter] = useState<{ lat: number; lon: number }>({ lat: 20, lon: 0 });
 
   function handleTabChange(_: unknown, value: "globe" | "map") {
     setMapView(value);
+  }
+
+  function handleLayersChange(_: unknown, value: string[]) {
+    setActiveLayers(value);
   }
 
   function onPresetClick(preset: RangePreset) {
@@ -410,42 +417,61 @@ export default function App() {
           <MetricCard title="Source age" value={data.status.data?.data_age_seconds == null ? "pending" : `${data.status.data.data_age_seconds}s`} icon={<SensorsIcon color="success" />} />
         </Box>
 
-        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "2fr 1fr" }, gap: 2 }}>
-          <Card variant="outlined">
-            <CardContent>
-              <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1} sx={{ mb: 1 }}>
-                <Typography variant="h6">Live Epicentres</Typography>
-                <Tabs value={mapView} onChange={handleTabChange} aria-label="map view">
-                  <Tab value="globe" label="Globe" />
-                  <Tab value="map" label="Map" />
-                </Tabs>
-              </Stack>
-              <Box sx={{ height: 520 }}>
-                <MapLibreView
-                  events={filteredEvents}
-                  heatmapCells={isHeatmapMode ? heatmapCells : undefined}
-                  alerts={filteredAlerts}
-                  selectedEvent={selectedEvent}
-                  focusLatLon={focusLatLon}
-                  onSelect={setSelectedEvent}
-                  initialCenter={viewCenter}
-                  onViewChange={(lat, lon) => setViewCenter({ lat, lon })}
-                  projection={mapView === "globe" ? "globe" : "mercator"}
-                />
-              </Box>
-            </CardContent>
-          </Card>
-          <Card variant="outlined">
-            <CardContent>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
-                <Typography variant="h6">Detected Signals</Typography>
-                {alertTypeFilter && (
-                  <Chip size="small" label="Clear filter" onClick={() => setAlertTypeFilter("")} onDelete={() => setAlertTypeFilter("")} />
-                )}
-              </Stack>
-              <AlertFeed alerts={alerts} typeFilter={alertTypeFilter} onTypeFilter={setAlertTypeFilter} onAlertClick={handleAlertClick} isHeatmapMode={isHeatmapMode} heatmapResolution={heatmapResolution} />
-            </CardContent>
-          </Card>
+        <Box sx={{ display: "flex", gap: 2, flexDirection: { xs: "column", lg: "row" }, height: { lg: 618 } }}>
+          <Box sx={{ flex: "2 1 0", minWidth: 0 }}>
+            <Card variant="outlined">
+              <CardContent>
+                <Stack direction={{ xs: "column", lg: "row" }} justifyContent="space-between" alignItems={{ lg: "center" }} spacing={1.25} sx={{ mb: 1 }}>
+                  <Typography variant="h6">Live Epicentres</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <ToggleButtonGroup size="small" value={activeLayers} onChange={handleLayersChange} aria-label="map layers">
+                      <ToggleButton value="event-hexes" aria-label="event hexagons">Event hexes</ToggleButton>
+                      <ToggleButton value="signal-hexes" aria-label="signal hexagons">Signal hexes</ToggleButton>
+                      <ToggleButton value="event-nodes" aria-label="event nodes">Event nodes</ToggleButton>
+                      <ToggleButton value="signal-nodes" aria-label="signal nodes">Signal nodes</ToggleButton>
+                    </ToggleButtonGroup>
+                    <Tabs value={mapView} onChange={handleTabChange} aria-label="map view">
+                      <Tab value="globe" label="Globe" />
+                      <Tab value="map" label="Map" />
+                    </Tabs>
+                  </Stack>
+                </Stack>
+                <Box sx={{ height: 520 }}>
+                  <MapLibreView
+                    events={filteredEvents}
+                    heatmapCells={isHeatmapMode ? heatmapCells : undefined}
+                    alerts={filteredAlerts}
+                    showEventHexes={activeLayers.includes("event-hexes")}
+                    showSignalHexes={activeLayers.includes("signal-hexes")}
+                    showEventNodes={activeLayers.includes("event-nodes")}
+                    showSignalNodes={activeLayers.includes("signal-nodes")}
+                    anomalyHexResolution={heatmapResolution}
+                    selectedEvent={selectedEvent}
+                    focusLatLon={focusLatLon}
+                    onSelect={setSelectedEvent}
+                    initialCenter={viewCenter}
+                    onViewChange={(lat, lon) => setViewCenter({ lat, lon })}
+                    projection={mapView === "globe" ? "globe" : "mercator"}
+                  />
+                </Box>
+              </CardContent>
+            </Card>
+          </Box>
+          <Box sx={{ flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <Card variant="outlined" sx={{ flex: 1, display: "flex", flexDirection: "column" }}>
+              <CardContent sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", "&:last-child": { pb: 2 } }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5, flexShrink: 0 }}>
+                  <Typography variant="h6">Detected Signals</Typography>
+                  {alertTypeFilter && (
+                    <Chip size="small" label="Clear filter" onClick={() => setAlertTypeFilter("")} onDelete={() => setAlertTypeFilter("")} />
+                  )}
+                </Stack>
+                <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+                  <AlertFeed alerts={alerts} typeFilter={alertTypeFilter} onTypeFilter={setAlertTypeFilter} onAlertClick={handleAlertClick} isHeatmapMode={isHeatmapMode} heatmapResolution={heatmapResolution} />
+                </Box>
+              </CardContent>
+            </Card>
+          </Box>
         </Box>
 
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "2fr 1fr" }, gap: 2 }}>
