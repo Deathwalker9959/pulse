@@ -11,6 +11,7 @@ logger = logging.getLogger("migrations")
 
 
 def _split_statements(sql: str) -> list[str]:
+    """Split a .sql file into individual statements on `;`, dropping blank lines and `--` comments."""
     statements: list[str] = []
     current: list[str] = []
     for line in sql.splitlines():
@@ -27,6 +28,7 @@ def _split_statements(sql: str) -> list[str]:
 
 
 def main() -> None:
+    """Apply every versions/*.sql migration in filename order against ClickHouse."""
     client = clickhouse_connect.get_client(
         host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
         port=int(os.getenv("CLICKHOUSE_PORT", "8123")),

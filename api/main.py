@@ -21,6 +21,7 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Start the WebSocket broadcasters on boot; stop them and close Redis/ClickHouse on shutdown."""
     await event_broadcaster.start()
     await alert_broadcaster.start()
     try:
@@ -48,5 +49,6 @@ app.include_router(ingestion_router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness probe: always returns {"status": "ok"} if the process is serving."""
     return {"status": "ok"}
 

@@ -19,44 +19,37 @@ _OUTER_SELECT = """
     selected_detail AS detail
 """
 
-_DEDUP_SELECT = """
-    argMax(anomaly_id, detected_at)   AS selected_anomaly_id,
-    max(detected_at)                  AS selected_detected_at,
-    argMax(event_time, detected_at)   AS selected_event_time,
-    anomaly_type                      AS selected_anomaly_type,
-    argMax(severity, detected_at)     AS selected_severity,
-    source_event_id                   AS selected_source_event_id,
-    argMax(source_place, detected_at) AS selected_source_place,
-    argMax(latitude, detected_at)     AS selected_latitude,
-    argMax(longitude, detected_at)    AS selected_longitude,
-    argMax(detail, detected_at)       AS selected_detail,
-    max(event_time)                   AS selected_sort_time
-"""
+def _dedup_select(prefix: str = "") -> str:
+    """Build the per-(source_event_id, anomaly_type) dedup projection.
 
-_RANGE_DEDUP_SELECT = """
-    argMax(ae.anomaly_id, ae.detected_at)   AS selected_anomaly_id,
-    max(ae.detected_at)                     AS selected_detected_at,
-    argMax(ae.event_time, ae.detected_at)   AS selected_event_time,
-    ae.anomaly_type                         AS selected_anomaly_type,
-    argMax(ae.severity, ae.detected_at)     AS selected_severity,
-    ae.source_event_id                      AS selected_source_event_id,
-    argMax(ae.source_place, ae.detected_at) AS selected_source_place,
-    argMax(ae.latitude, ae.detected_at)     AS selected_latitude,
-    argMax(ae.longitude, ae.detected_at)    AS selected_longitude,
-    argMax(ae.detail, ae.detected_at)       AS selected_detail,
-    max(ae.event_time)                      AS selected_sort_time
-"""
+    `prefix` qualifies column refs with a table alias (e.g. "ae.") for the joined/range query.
+    """
+    p = prefix
+    return f"""
+        argMax({p}anomaly_id, {p}detected_at)   AS selected_anomaly_id,
+        max({p}detected_at)                     AS selected_detected_at,
+        argMax({p}event_time, {p}detected_at)   AS selected_event_time,
+        {p}anomaly_type                         AS selected_anomaly_type,
+        argMax({p}severity, {p}detected_at)     AS selected_severity,
+        {p}source_event_id                      AS selected_source_event_id,
+        argMax({p}source_place, {p}detected_at) AS selected_source_place,
+        argMax({p}latitude, {p}detected_at)     AS selected_latitude,
+        argMax({p}longitude, {p}detected_at)    AS selected_longitude,
+        argMax({p}detail, {p}detected_at)       AS selected_detail,
+        max({p}event_time)                      AS selected_sort_time
+    """
 
 
 @cached(ttl=10, key_prefix="anomalies:history")
 async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
+    """Most-recent anomalies, deduped to the latest detection per (event, type); optionally time-filtered."""
     if from_ts or to_ts:
         t0 = from_ts or datetime(1970, 1, 1, tzinfo=timezone.utc)
         t1 = to_ts or datetime.now(timezone.utc)
         return await query(f"""
             SELECT {_OUTER_SELECT}
             FROM (
-                SELECT {_RANGE_DEDUP_SELECT}
+                SELECT {_dedup_select("ae.")}
                 FROM anomaly_events AS ae
                 WHERE ae.event_time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
                 GROUP BY ae.source_event_id, ae.anomaly_type
@@ -67,7 +60,7 @@ async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = N
     return await query(f"""
         SELECT {_OUTER_SELECT}
         FROM (
-            SELECT {_DEDUP_SELECT}
+            SELECT {_dedup_select()}
             FROM anomaly_events
             GROUP BY source_event_id, anomaly_type
         )

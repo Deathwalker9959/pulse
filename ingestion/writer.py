@@ -7,6 +7,7 @@ from models import AnomalyEvent, EarthquakeEvent
 
 
 def magnitude_band(magnitude: float) -> str:
+    """Classify a magnitude into a USGS severity band (micro…great) for pre-bucketed aggregation."""
     if magnitude < 1:
         return "micro"
     if magnitude < 3:
@@ -23,6 +24,7 @@ def magnitude_band(magnitude: float) -> str:
 
 
 def depth_band(depth_km: float) -> str:
+    """Classify a hypocenter depth into a band (negative/shallow/intermediate/deep)."""
     if depth_km < 0:
         return "negative"
     if depth_km < 70:
@@ -33,6 +35,7 @@ def depth_band(depth_km: float) -> str:
 
 
 def geohash5(latitude: float, longitude: float) -> str:
+    """Encode a position as a precision-5 geohash; empty string if the coords can't be encoded."""
     try:
         return pygeohash.encode(latitude, longitude, precision=5)
     except Exception:
@@ -40,35 +43,17 @@ def geohash5(latitude: float, longitude: float) -> str:
 
 
 def earthquake_row(event: EarthquakeEvent) -> dict:
+    """Flatten an EarthquakeEvent into a ClickHouse row, adding the derived band/geohash columns."""
     return {
-        "event_id": event.event_id,
-        "time": event.time,
-        "updated": event.updated,
-        "latitude": event.latitude,
-        "longitude": event.longitude,
-        "depth_km": event.depth_km,
-        "magnitude": event.magnitude,
-        "mag_type": event.mag_type,
-        "place": event.place,
-        "event_type": event.event_type,
-        "status": event.status,
-        "alert": event.alert,
-        "tsunami": event.tsunami,
-        "significance": event.significance,
-        "net": event.net,
-        "nst": event.nst,
-        "gap": event.gap,
+        **event.model_dump(mode="python"),
         "mag_band": magnitude_band(event.magnitude),
         "depth_band": depth_band(event.depth_km),
         "geohash": geohash5(event.latitude, event.longitude),
     }
 
 
-def anomaly_row(event: AnomalyEvent) -> dict:
-    return event.model_dump(mode="python")
-
-
 async def _insert(client, table: str, rows: list[dict]) -> None:
+    """Column-wise insert of dict rows into `table`; no-op on empty input. Columns taken from row 0."""
     if not rows:
         return
     columns = list(rows[0].keys())
@@ -77,10 +62,12 @@ async def _insert(client, table: str, rows: list[dict]) -> None:
 
 @retry(max_attempts=10, backoff_base=2.0, max_delay=30.0)
 async def write_earthquakes(client, events: list[EarthquakeEvent]) -> None:
+    """Persist earthquakes to ClickHouse (only those with valid coords), retrying on transient failures."""
     await _insert(client, "earthquakes_raw", [earthquake_row(e) for e in events if e.has_position()])
 
 
 @retry(max_attempts=10, backoff_base=2.0, max_delay=30.0)
 async def write_anomalies(client, events: list[AnomalyEvent]) -> None:
-    await _insert(client, "anomaly_events", [anomaly_row(e) for e in events])
+    """Persist detected anomalies to ClickHouse, retrying on transient failures."""
+    await _insert(client, "anomaly_events", [e.model_dump(mode="python") for e in events])
 

@@ -15,6 +15,7 @@ logging.basicConfig(
 
 
 async def main() -> None:
+    """Run the live USGS poller and the historical backfill sync concurrently for the process lifetime."""
     await asyncio.gather(
         run(),
         run_historical_sync(),

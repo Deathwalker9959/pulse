@@ -21,6 +21,7 @@ SEEN_HASH = "pulse:seen-events"
 
 
 async def _new_or_revised(redis: aioredis.Redis, events: list[EarthquakeEvent]) -> list[EarthquakeEvent]:
+    """Keep only events whose `updated` timestamp differs from the last-seen value in Redis, recording the new value."""
     fresh: list[EarthquakeEvent] = []
     pipe = redis.pipeline()
     for event in events:
@@ -40,25 +41,23 @@ async def _new_or_revised(redis: aioredis.Redis, events: list[EarthquakeEvent]) 
     return fresh
 
 
-async def _publish_events(redis: aioredis.Redis, events: list[EarthquakeEvent]) -> None:
+async def _publish(
+    redis: aioredis.Redis,
+    stream: str,
+    events: list[EarthquakeEvent] | list[AnomalyEvent],
+    maxlen: int,
+) -> None:
+    """Append each event's JSON to a capped Redis stream in one pipeline (no-op if empty)."""
     if not events:
         return
     pipe = redis.pipeline()
     for event in events:
-        pipe.xadd(STREAM_EVENTS, {"data": event.model_dump_json()}, maxlen=50_000, approximate=True)
-    await pipe.execute()
-
-
-async def _publish_alerts(redis: aioredis.Redis, events: list[AnomalyEvent]) -> None:
-    if not events:
-        return
-    pipe = redis.pipeline()
-    for event in events:
-        pipe.xadd(STREAM_ALERTS, {"data": event.model_dump_json()}, maxlen=10_000, approximate=True)
+        pipe.xadd(stream, {"data": event.model_dump_json()}, maxlen=maxlen, approximate=True)
     await pipe.execute()
 
 
 async def run() -> None:
+    """Main ingestion loop: poll USGS, dedup, then publish + persist events and detected anomalies forever."""
     redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=False)
     clickhouse = await get_clickhouse_client()
     http = httpx.AsyncClient(headers={"User-Agent": "PULSE earthquake assessment app"}, follow_redirects=True)
@@ -70,7 +69,7 @@ async def run() -> None:
                 events = await _new_or_revised(redis, fetched)
                 if events:
                     earthquake_task = asyncio.gather(
-                        _publish_events(redis, events),
+                        _publish(redis, STREAM_EVENTS, events, maxlen=50_000),
                         write_earthquakes(clickhouse, events),
                     )
                     try:
@@ -85,7 +84,7 @@ async def run() -> None:
                     await earthquake_task
                     await asyncio.gather(
                         write_anomalies(clickhouse, anomalies),
-                        _publish_alerts(redis, anomalies),
+                        _publish(redis, STREAM_ALERTS, anomalies, maxlen=10_000),
                     )
                     logger.info("processed %d new/revised events and %d anomalies", len(events), len(anomalies))
                 else:

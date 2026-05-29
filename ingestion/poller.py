@@ -16,6 +16,7 @@ POLL_INTERVAL = int(os.getenv("USGS_POLL_INTERVAL", "60"))
 
 @retry(max_attempts=5, backoff_base=2.0, max_delay=30.0, exceptions=(httpx.HTTPError,))
 async def fetch_events(http: httpx.AsyncClient) -> list[EarthquakeEvent]:
+    """Fetch the USGS live feed and parse it into EarthquakeEvents, skipping features without an id."""
     response = await http.get(USGS_FEED_URL, timeout=20.0)
     response.raise_for_status()
     body = response.json()

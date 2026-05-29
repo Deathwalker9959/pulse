@@ -12,7 +12,10 @@ router = APIRouter(tags=["websocket"])
 
 
 class StreamBroadcaster:
+    """Fans out one Redis stream to every connected WebSocket via a single background reader task."""
+
     def __init__(self, stream: str, name: str) -> None:
+        """Configure (but don't start) a broadcaster for `stream`; `name` labels logs/tasks."""
         self.stream = stream
         self.name = name
         self.connections: set[WebSocket] = set()
@@ -21,6 +24,7 @@ class StreamBroadcaster:
         self.task: asyncio.Task | None = None
 
     async def start(self) -> None:
+        """Start the background stream-reader task once (idempotent)."""
         if self.running:
             return
         self.running = True
@@ -28,6 +32,7 @@ class StreamBroadcaster:
         logger.info("%s broadcaster started on %s", self.name, self.stream)
 
     async def stop(self) -> None:
+        """Signal the reader to stop and await cancellation of its task."""
         self.running = False
         if self.task:
             self.task.cancel()
@@ -37,13 +42,16 @@ class StreamBroadcaster:
                 pass
 
     async def connect(self, websocket: WebSocket) -> None:
+        """Accept a new WebSocket and register it to receive broadcasts."""
         await websocket.accept()
         self.connections.add(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
+        """Drop a WebSocket from the broadcast set (safe if already absent)."""
         self.connections.discard(websocket)
 
     async def _run(self) -> None:
+        """Block-read the Redis stream and push each new message to all clients until stopped."""
         redis = get_redis()
         while self.running:
             try:
@@ -61,6 +69,7 @@ class StreamBroadcaster:
                 await asyncio.sleep(1)
 
     async def _broadcast(self, payload: str) -> None:
+        """Send `payload` to every client, pruning any whose send fails."""
         dead: list[WebSocket] = []
         for websocket in list(self.connections):
             try:
@@ -75,26 +84,24 @@ event_broadcaster = StreamBroadcaster("pulse:events", "live-events")
 alert_broadcaster = StreamBroadcaster("pulse:alerts", "alerts")
 
 
-@router.websocket("/ws/events")
-async def events_ws(websocket: WebSocket) -> None:
-    await event_broadcaster.connect(websocket)
+async def _serve(websocket: WebSocket, broadcaster: StreamBroadcaster) -> None:
+    """Register the socket with a broadcaster and hold the connection open until it disconnects."""
+    await broadcaster.connect(websocket)
     try:
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
-        event_broadcaster.disconnect(websocket)
-    except Exception:
-        event_broadcaster.disconnect(websocket)
+    except (WebSocketDisconnect, Exception):
+        broadcaster.disconnect(websocket)
+
+
+@router.websocket("/ws/events")
+async def events_ws(websocket: WebSocket) -> None:
+    """WS /ws/events — live stream of new/revised earthquake events."""
+    await _serve(websocket, event_broadcaster)
 
 
 @router.websocket("/ws/alerts")
 async def alerts_ws(websocket: WebSocket) -> None:
-    await alert_broadcaster.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        alert_broadcaster.disconnect(websocket)
-    except Exception:
-        alert_broadcaster.disconnect(websocket)
+    """WS /ws/alerts — live stream of detected anomaly alerts."""
+    await _serve(websocket, alert_broadcaster)
 

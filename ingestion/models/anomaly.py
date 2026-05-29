@@ -29,6 +29,7 @@ class Severity(StrEnum):
 
 
 def _anomaly_id(source_event_id: str, anomaly_type: str) -> str:
+    """Deterministic 36-char id for an (event, anomaly type) pair, so re-detection dedups on insert."""
     return hashlib.sha256(f"{source_event_id}:{anomaly_type}".encode()).hexdigest()[:36]
 
 

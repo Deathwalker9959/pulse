@@ -17,9 +17,12 @@ def retry(
     max_delay: float = 30.0,
     exceptions: tuple[type[BaseException], ...] = (Exception,),
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
+    """Decorator factory: retry an async function with exponential backoff on the given exceptions."""
     def decorate(fn: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+        """Wrap a single async function with the retry loop."""
         @functools.wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            """Call `fn`, retrying up to `max_attempts` with growing delay; re-raise after the last try."""
             delay = 1.0
             for attempt in range(1, max_attempts + 1):
                 try:

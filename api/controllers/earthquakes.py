@@ -8,27 +8,29 @@ from decorators import cached
 from db import query
 
 
+_LIVE_COLUMNS = """
+    event_id, time, updated, latitude, longitude, depth_km, magnitude,
+    mag_type, place, event_type, status, alert, tsunami, significance,
+    net, mag_band, depth_band
+"""
+
+
 @cached(ttl=10, key_prefix="earthquakes:live")
 async def get_live(*, redis, from_ts: datetime | None = None, to_ts: datetime | None = None, min_magnitude: float = 0.0) -> list[dict]:
+    """Recent events for the map/list: a given window (ranked by magnitude) or the last 2 hours."""
     mag_clause = "AND magnitude >= {min_mag:Float32}" if min_magnitude > 0 else ""
     if from_ts or to_ts:
         t0 = from_ts or (datetime.now(timezone.utc) - timedelta(hours=2))
         t1 = to_ts or datetime.now(timezone.utc)
         return await query(f"""
-            SELECT
-                event_id, time, updated, latitude, longitude, depth_km, magnitude,
-                mag_type, place, event_type, status, alert, tsunami, significance,
-                net, mag_band, depth_band
+            SELECT {_LIVE_COLUMNS}
             FROM earthquakes_raw FINAL
             WHERE time >= {{t0:DateTime}} AND time <= {{t1:DateTime}} {mag_clause}
             ORDER BY magnitude DESC, time DESC
             LIMIT 5000
         """, {"t0": t0, "t1": t1, "min_mag": min_magnitude})
     return await query(f"""
-        SELECT
-            event_id, time, updated, latitude, longitude, depth_km, magnitude,
-            mag_type, place, event_type, status, alert, tsunami, significance,
-            net, mag_band, depth_band
+        SELECT {_LIVE_COLUMNS}
         FROM earthquakes_raw FINAL
         WHERE time >= now() - INTERVAL 2 HOUR {mag_clause}
         ORDER BY time DESC
@@ -49,6 +51,7 @@ _IET_BOUNDARIES = [lo for _, lo, _ in _IET_BINS[1:]]  # lower bounds for bisect,
 
 @cached(ttl=120, key_prefix="earthquakes:magfreq")
 async def get_magnitude_frequency(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    """Event counts per 0.1-magnitude bin (Gutenberg-Richter frequency-magnitude distribution)."""
     return await query("""
         SELECT
             round(toFloat64(magnitude), 1) AS mag_bin,
@@ -63,6 +66,7 @@ async def get_magnitude_frequency(*, redis, from_ts: datetime, to_ts: datetime) 
 
 @cached(ttl=60, key_prefix="earthquakes:energy")
 async def get_energy_timeseries(*, redis, from_ts: datetime, to_ts: datetime, bucket: str = "1d") -> list[dict]:
+    """Total radiated seismic energy (joules, from magnitude) per time bucket."""
     expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
@@ -77,6 +81,7 @@ async def get_energy_timeseries(*, redis, from_ts: datetime, to_ts: datetime, bu
 
 @cached(ttl=120, key_prefix="earthquakes:bvalue")
 async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    """Daily Gutenberg-Richter b-value (from mean magnitude) with sample size, for days with enough events."""
     return await query("""
         SELECT
             toStartOfDay(time) AS day,
@@ -93,6 +98,7 @@ async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime) -> l
 
 @cached(ttl=120, key_prefix="earthquakes:iet")
 async def get_inter_event_times(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    """Histogram of gaps between consecutive events, bucketed into _IET_BINS (clustering indicator)."""
     rows = await query("""
         SELECT time FROM earthquakes_raw FINAL
         WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
@@ -111,6 +117,7 @@ async def get_inter_event_times(*, redis, from_ts: datetime, to_ts: datetime) ->
 
 @cached(ttl=60, key_prefix="earthquakes:heatmap")
 async def get_heatmap(*, redis, from_ts: datetime, to_ts: datetime, resolution: int = 3) -> list[dict]:
+    """Per-H3-cell event count and magnitude stats for the window, for the map heatmap layer."""
     return await query("""
         SELECT
             lower(hex(geoToH3(longitude, latitude, {resolution:UInt8}))) AS h3_index,

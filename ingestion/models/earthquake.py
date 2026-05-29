@@ -27,26 +27,34 @@ class EarthquakeEvent(BaseModel):
     @field_validator("event_id", "mag_type", "place", "event_type", "status", "alert", "net", mode="before")
     @classmethod
     def clean_text(cls, value: object) -> str:
+        """Coerce nullable text fields to a stripped string so downstream code never sees None."""
         return str(value or "").strip()
 
     def has_position(self) -> bool:
+        """True when lat/lon fall within valid geographic bounds (filters out placeholder coords)."""
         return -90 <= self.latitude <= 90 and -180 <= self.longitude <= 180
 
     @classmethod
     def from_geojson_feature(cls, feature: dict) -> "EarthquakeEvent":
+        """Build an EarthquakeEvent from a USGS GeoJSON feature, tolerating missing/null fields."""
         props = feature.get("properties") or {}
         coords = (feature.get("geometry") or {}).get("coordinates") or []
 
         def ts(value: int | float | None) -> datetime:
+            """Convert a USGS epoch-millisecond timestamp to an aware UTC datetime."""
             return datetime.fromtimestamp((value or 0) / 1000.0, tz=timezone.utc)
+
+        def coord(i: int) -> float:
+            """Read coordinate component `i` (lon/lat/depth) as float, defaulting to 0.0 when absent."""
+            return float(coords[i]) if len(coords) > i and coords[i] is not None else 0.0
 
         return cls(
             event_id=feature.get("id") or props.get("ids") or "",
             time=ts(props.get("time")),
             updated=ts(props.get("updated") or props.get("time")),
-            longitude=float(coords[0]) if len(coords) > 0 and coords[0] is not None else 0.0,
-            latitude=float(coords[1]) if len(coords) > 1 and coords[1] is not None else 0.0,
-            depth_km=float(coords[2]) if len(coords) > 2 and coords[2] is not None else 0.0,
+            longitude=coord(0),
+            latitude=coord(1),
+            depth_km=coord(2),
             magnitude=float(props.get("mag") or 0.0),
             mag_type=props.get("magType") or "",
             place=props.get("place") or "",

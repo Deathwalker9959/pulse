@@ -14,6 +14,7 @@ INGESTION_CONTAINER = "fivecell-ingestion-1"
 
 
 def _docker(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a `docker` command and capture its output (text mode, 30s timeout, never raises on non-zero)."""
     return subprocess.run(
         ["docker", *args],
         input=input_text,
@@ -26,6 +27,7 @@ def _docker(*args: str, input_text: str | None = None) -> subprocess.CompletedPr
 
 
 def _require_container(name: str) -> None:
+    """Skip the test unless the named docker container is currently running."""
     result = _docker("ps", "--format", "{{.Names}}")
     if result.returncode != 0:
         pytest.skip(f"docker is unavailable: {result.stderr.strip()}")
@@ -34,6 +36,7 @@ def _require_container(name: str) -> None:
 
 
 def _api(path: str, params: dict[str, Any] | None = None) -> Any:
+    """GET an API path and return parsed JSON (or a size summary); skip the test if the API is unreachable."""
     params = params or {}
     url = API_BASE + path + (("?" + urllib.parse.urlencode(params)) if params else "")
     try:
@@ -48,6 +51,7 @@ def _api(path: str, params: dict[str, Any] | None = None) -> Any:
 
 
 def _clickhouse_json(sql: str) -> list[dict[str, Any]]:
+    """Run a query inside the ClickHouse container and return its JSON `data` rows."""
     _require_container(CLICKHOUSE_CONTAINER)
     result = _docker(
         "exec",
@@ -62,17 +66,20 @@ def _clickhouse_json(sql: str) -> list[dict[str, Any]]:
 
 
 def _clickhouse_multi(sql: str) -> None:
+    """Run a multi-statement SQL script inside the ClickHouse container (e.g. setup/cleanup)."""
     result = _docker("exec", CLICKHOUSE_CONTAINER, "clickhouse-client", "--multiquery", "--query", sql)
     if result.returncode != 0:
         pytest.fail(result.stderr)
 
 
 def _as_int(value: Any) -> int:
+    """Coerce a JSON value (often a numeric string from ClickHouse) to int for comparison."""
     return int(value)
 
 
 @pytest.fixture(scope="module")
 def may_28_window() -> tuple[str, str, str, str, int]:
+    """Module fixture: API/SQL timestamp strings for 2026-05-28 plus the raw row count; skips if unseeded."""
     _require_container(CLICKHOUSE_CONTAINER)
     start_api = "2026-05-28T00:00:00.000Z"
     end_api = "2026-05-28T23:59:59.000Z"
@@ -93,6 +100,7 @@ def may_28_window() -> tuple[str, str, str, str, int]:
 
 @pytest.mark.integration
 def test_every_http_route_responds(may_28_window: tuple[str, str, str, str, int]) -> None:
+    """Smoke test: every public HTTP route returns a non-None payload for the seeded window."""
     start_api, end_api, *_ = may_28_window
     routes = [
         ("/health", {}),
@@ -116,6 +124,7 @@ def test_every_http_route_responds(may_28_window: tuple[str, str, str, str, int]
 @pytest.mark.integration
 @pytest.mark.parametrize("bucket", ["1m", "5m", "15m", "1h", "6h", "1d", "1mo", "1y"])
 def test_timeseries_totals_match_final_raw_table(may_28_window: tuple[str, str, str, str, int], bucket: str) -> None:
+    """For every bucket size, the timeseries counts sum to the raw FINAL row count (no double/under-counting)."""
     start_api, end_api, _, _, raw_count = may_28_window
     rows = _api("/api/earthquakes/timeseries", {"from": start_api, "to": end_api, "bucket": bucket})
     assert sum(_as_int(row["event_count"]) for row in rows) == raw_count
@@ -124,6 +133,7 @@ def test_timeseries_totals_match_final_raw_table(may_28_window: tuple[str, str, 
 @pytest.mark.integration
 @pytest.mark.parametrize("bucket", ["1m", "5m", "15m", "1h", "6h", "1d", "1mo", "1y"])
 def test_network_rollups_totals_match_final_raw_table(may_28_window: tuple[str, str, str, str, int], bucket: str) -> None:
+    """For every bucket size, network-rollup counts sum to the raw FINAL row count."""
     start_api, end_api, _, _, raw_count = may_28_window
     rows = _api("/api/earthquakes/rollups/network", {"from": start_api, "to": end_api, "bucket": bucket, "limit": "10000"})
     assert sum(_as_int(row["event_count"]) for row in rows) == raw_count
@@ -131,6 +141,7 @@ def test_network_rollups_totals_match_final_raw_table(may_28_window: tuple[str, 
 
 @pytest.mark.integration
 def test_band_topn_heatmap_and_anomaly_aggregations_match_clickhouse(may_28_window: tuple[str, str, str, str, int]) -> None:
+    """Heatmap/band/top-n/anomaly aggregations from the API exactly match direct ClickHouse queries."""
     start_api, end_api, start_sql, end_sql, raw_count = may_28_window
 
     heatmap = _api("/api/earthquakes/heatmap", {"from": start_api, "to": end_api, "resolution": "3"})
@@ -210,6 +221,7 @@ def test_band_topn_heatmap_and_anomaly_aggregations_match_clickhouse(may_28_wind
 
 @pytest.mark.integration
 def test_ingestion_writer_to_api_end_to_end() -> None:
+    """End-to-end: write an event+anomaly via the ingestion container, then read both back through the API."""
     _require_container(INGESTION_CONTAINER)
     _require_container(CLICKHOUSE_CONTAINER)
     event_id = "test-e2e-aggregation-api-001"

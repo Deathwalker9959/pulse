@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def month_ranges(start: date, end: date) -> Iterator[tuple[date, date]]:
+    """Yield (month_start, month_end) pairs covering [start, end], one calendar month at a time."""
     current = start.replace(day=1)
     while current <= end:
         next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -31,6 +32,11 @@ def month_ranges(start: date, end: date) -> Iterator[tuple[date, date]]:
 
 
 async def get_last_synced(clickhouse) -> date:
+    """Read the last fully-synced date from sync state, or HISTORICAL_START if never synced.
+
+    The caller clamps this forward to the retention window, so the 1970 default never causes
+    a futile multi-decade crawl through data the earthquakes_raw TTL would immediately delete.
+    """
     result = await clickhouse.query(
         "SELECT value FROM ingestion_sync_state FINAL WHERE key = {key:String}",
         parameters={"key": SYNC_KEY},
@@ -41,6 +47,7 @@ async def get_last_synced(clickhouse) -> date:
 
 
 async def set_last_synced(clickhouse, d: date) -> None:
+    """Persist `d` as the new high-water mark for historical sync progress."""
     await clickhouse.insert(
         "ingestion_sync_state",
         [[SYNC_KEY, d.isoformat()]],
@@ -50,6 +57,7 @@ async def set_last_synced(clickhouse, d: date) -> None:
 
 @retry(max_attempts=5, backoff_base=2.0, max_delay=30.0, exceptions=(httpx.HTTPError,))
 async def fetch_month(http: httpx.AsyncClient, t0: date, t1: date) -> list[EarthquakeEvent]:
+    """Fetch one month of events from USGS ComCat; warns if the 20k cap is hit (possible truncation)."""
     params = {
         "format": "geojson",
         "starttime": t0.isoformat(),
@@ -69,6 +77,7 @@ RETENTION_DAYS = 400  # must match earthquakes_raw TTL
 
 
 async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetime) -> int:
+    """Re-run anomaly detection over stored events in [start, end] (clamped to retention) and persist results."""
     retention_cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
     effective_start = max(start, retention_cutoff)
     if effective_start >= end:
@@ -94,12 +103,14 @@ async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetim
 
 
 def _seconds_until_midnight() -> float:
+    """Seconds until 00:05 UTC tomorrow — the idle interval between completed daily sync passes."""
     now = datetime.now(timezone.utc)
     tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
     return (tomorrow - now).total_seconds()
 
 
 async def run_historical_sync() -> None:
+    """Daily catalog backfill: fetch month-by-month from last-synced to yesterday (prefetching ahead), then sleep."""
     clickhouse = await get_clickhouse_client()
     http = httpx.AsyncClient(
         headers={"User-Agent": "PULSE/historical-sync"},
@@ -109,7 +120,11 @@ async def run_historical_sync() -> None:
     try:
         while True:
             try:
-                last = await get_last_synced(clickhouse)
+                # Don't bother fetching data older than the earthquakes_raw retention window —
+                # the table's TTL (RETENTION_DAYS) deletes it on merge, so syncing it is wasted
+                # work that never persists. Clamp a fresh or stale high-water mark forward.
+                earliest = date.today() - timedelta(days=RETENTION_DAYS)
+                last = max(await get_last_synced(clickhouse), earliest)
                 target = date.today() - timedelta(days=1)
                 if last >= target:
                     wait = _seconds_until_midnight()
