@@ -11,6 +11,7 @@ import {
   TopSummaryGrid,
 } from "./components/dashboard";
 import { resolveRange, useDashboardData } from "./hooks/useDashboardData";
+import { utcDateLabel, utcMonthYearLabel, utcTimeLabel, utcYearLabel } from "./utils/dates";
 
 function autoBucket(from: string, to: string): BucketSize {
   const spanMs = new Date(to).getTime() - new Date(from).getTime();
@@ -43,17 +44,24 @@ export default function App() {
     setActiveLayers(value);
   }
 
+  function clearMapFocus() {
+    setSelectedEvent(null);
+    setFocusLatLon(null);
+  }
+
   function onPresetClick(preset: RangePreset) {
     const range = resolveRange(preset);
     setFrom(range.from);
     setTo(range.to);
     setActiveRange(preset);
+    clearMapFocus();
   }
 
   function onPickerChange(newFrom: string, newTo: string) {
     setFrom(newFrom);
     setTo(newTo);
     setActiveRange(null);
+    clearMapFocus();
   }
 
   function clearFilters() {
@@ -93,17 +101,19 @@ export default function App() {
   }
 
   const filteredEvents = net ? events.filter(event => event.net.toLowerCase().includes(net.toLowerCase())) : events;
+  const selectedVisibleEvent = selectedEvent && filteredEvents.some(event => event.event_id === selectedEvent.event_id)
+    ? selectedEvent
+    : null;
   const filteredAlerts = useMemo(
     () => alertTypeFilter ? alerts.filter(alert => alert.anomaly_type === alertTypeFilter) : alerts,
     [alerts, alertTypeFilter]
   );
 
   function xLabel(isoTime: string): string {
-    const date = new Date(isoTime);
-    if (bucket === "1y") return date.toLocaleDateString([], { year: "numeric" });
-    if (bucket === "1mo") return date.toLocaleDateString([], { month: "short", year: "numeric" });
-    if (bucket === "1d" || bucket === "6h") return date.toLocaleDateString([], { month: "short", day: "numeric" });
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (bucket === "1y") return utcYearLabel(isoTime);
+    if (bucket === "1mo") return utcMonthYearLabel(isoTime);
+    if (bucket === "1d" || bucket === "6h") return utcDateLabel(isoTime);
+    return utcTimeLabel(isoTime);
   }
 
   return (
@@ -141,7 +151,7 @@ export default function App() {
           heatmapResolution={heatmapResolution}
           activeLayers={activeLayers}
           mapView={mapView}
-          selectedEvent={selectedEvent}
+          selectedEvent={selectedVisibleEvent}
           focusLatLon={focusLatLon}
           viewCenter={viewCenter}
           alertTypeFilter={alertTypeFilter}

@@ -97,8 +97,6 @@ def test_every_http_route_responds(may_28_window: tuple[str, str, str, str, int]
     routes = [
         ("/health", {}),
         ("/api/earthquakes/live", {"from": start_api, "to": end_api}),
-        ("/api/earthquakes/atlas", {"from": start_api, "to": end_api, "mode": "events"}),
-        ("/api/earthquakes/atlas", {"from": start_api, "to": end_api, "mode": "heatmap", "resolution": "3"}),
         ("/api/earthquakes/heatmap", {"from": start_api, "to": end_api, "resolution": "3"}),
         ("/api/earthquakes/timeseries", {"from": start_api, "to": end_api, "bucket": "1h"}),
         ("/api/earthquakes/top-networks", {"from": start_api, "to": end_api, "limit": "10"}),
@@ -112,11 +110,7 @@ def test_every_http_route_responds(may_28_window: tuple[str, str, str, str, int]
     ]
     for path, params in routes:
         payload = _api(path, params)
-        if path.endswith("/atlas"):
-            assert payload["content_type"].startswith("image/png")
-            assert payload["bytes"] > 1000
-        else:
-            assert payload is not None
+        assert payload is not None
 
 
 @pytest.mark.integration

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-import functools
-import io
 import os
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
 
 from cache import get_redis
 from controllers.alerts import get_anomaly_history
@@ -19,8 +15,6 @@ from controllers.earthquakes import (
     get_inter_event_times,
     get_live,
     get_magnitude_frequency,
-    render_events_atlas,
-    render_heatmap_atlas,
 )
 from controllers.stats import (
     RANGE_PRESETS,
@@ -62,31 +56,6 @@ async def live(
 ) -> list[dict]:
     from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_live(redis=redis, from_ts=from_ts, to_ts=to_ts, min_magnitude=min_magnitude)
-
-
-@earthquake_router.get("/atlas")
-async def atlas(
-    from_ts: Annotated[datetime | None, Query(alias="from")] = None,
-    to_ts: Annotated[datetime | None, Query(alias="to")] = None,
-    mode: Annotated[str, Query()] = "events",
-    resolution: Annotated[int, Query(ge=1, le=5)] = 3,
-    redis=Depends(get_redis),
-) -> StreamingResponse:
-    if mode == "heatmap" and from_ts and to_ts:
-        cells = await get_heatmap(redis=redis, from_ts=from_ts, to_ts=to_ts, resolution=resolution)
-        png = await _run_in_thread(render_heatmap_atlas, cells)
-    else:
-        events = await get_live(redis=redis, from_ts=from_ts, to_ts=to_ts)
-        png = await _run_in_thread(render_events_atlas, events)
-    return StreamingResponse(
-        io.BytesIO(png),
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=120"},
-    )
-
-
-async def _run_in_thread(fn, *args):
-    return await asyncio.get_running_loop().run_in_executor(None, functools.partial(fn, *args))
 
 
 @earthquake_router.get("/heatmap")

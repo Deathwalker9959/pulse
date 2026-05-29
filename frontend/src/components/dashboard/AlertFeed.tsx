@@ -2,7 +2,7 @@ import { Box, Chip, Stack, Typography } from "@mui/material";
 import { useMemo } from "react";
 import { latLngToCell } from "h3-js";
 import type { AnomalyEvent } from "../../api/client";
-import { utcDateTimeLabel } from "../../utils/dates";
+import { parseApiDate, utcDateTimeLabel } from "../../utils/dates";
 import { ANOMALY_TYPE_LABEL, SEVERITY_BORDER, SEVERITY_CHIP_COLOR, SEV_ORDER } from "./constants";
 
 interface AlertFeedProps {
@@ -83,7 +83,7 @@ export function AlertFeed({
       <Typography variant="caption" color="text.secondary">
         {alert.source_place ? `${alert.source_place} · ` : ""}
         {utcDateTimeLabel(
-          alert.event_time && new Date(alert.event_time).getFullYear() > 2000
+          alert.event_time && parseApiDate(alert.event_time).getUTCFullYear() > 2000
             ? alert.event_time : alert.detected_at
         )}
       </Typography>

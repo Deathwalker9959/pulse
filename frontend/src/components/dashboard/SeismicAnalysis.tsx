@@ -2,6 +2,7 @@ import { Box, Card, CardContent, Typography } from "@mui/material";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../../api/client";
+import { utcDateLabel } from "../../utils/dates";
 import { MC } from "./constants";
 
 interface SeismicAnalysisProps {
@@ -76,10 +77,10 @@ export function SeismicAnalysis({
               <ResponsiveContainer>
                 <LineChart data={bValueHistory}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="day" tickFormatter={day => new Date(day).toLocaleDateString([], { month: "short", day: "numeric" })} />
+                  <XAxis dataKey="day" tickFormatter={day => utcDateLabel(String(day))} />
                   <YAxis domain={[0, 2.5]} allowDecimals />
                   <Tooltip
-                    labelFormatter={day => new Date(String(day)).toLocaleDateString()}
+                    labelFormatter={day => utcDateLabel(String(day))}
                     formatter={(value) => [Number(value).toFixed(2), "b-value"]}
                   />
                   <ReferenceLine y={0.5} stroke="#dc2626" strokeDasharray="4 2" label={{ value: "Critical (0.5)", position: "insideTopRight", fontSize: 10 }} />

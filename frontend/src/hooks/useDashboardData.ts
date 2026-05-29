@@ -1,6 +1,8 @@
 import { useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AnomalyEvent, type BucketSize, type EarthquakeEvent, type RangePreset, websocketUrl } from "../api/client";
+import { websocketUrl } from "../api/apiClient";
+import { apiService } from "../api/service";
+import type { AnomalyEvent, BucketSize, EarthquakeEvent, RangePreset } from "../api/client";
 import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../api/client";
 import { useWebSocket } from "./useWebSocket";
 
@@ -53,47 +55,47 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
 
   const heatmap = useQuery({
     queryKey: ["earthquakes", "heatmap", from, to, heatmapResolution],
-    queryFn: () => api.heatmap(from!, to!, heatmapResolution),
+    queryFn: () => apiService.heatmap(from!, to!, heatmapResolution),
     enabled: isHeatmapMode && !!from && !!to,
     staleTime: 60_000,
   });
 
   const live = useQuery({
     queryKey: ["earthquakes", "live", from, to, minMagnitude],
-    queryFn: () => api.live(from, to, minMagnitude),
+    queryFn: () => apiService.live(from, to, minMagnitude),
     enabled: !isHeatmapMode,
     staleTime: from || to ? 30_000 : Infinity,
   });
-  const alerts = useQuery({ queryKey: ["anomalies", "history", from, to], queryFn: () => api.anomalyHistory(from, to), staleTime: 0 });
-  const status = useQuery({ queryKey: ["ingestion", "status"], queryFn: api.ingestionStatus });
-  const timeseries = useQuery({ queryKey: ["earthquakes", "timeseries", from, to, bucket], queryFn: () => api.timeseries(from, to, bucket) });
-  const networks = useQuery({ queryKey: ["earthquakes", "top-networks", from, to], queryFn: () => api.topNetworks(from, to) });
-  const places = useQuery({ queryKey: ["earthquakes", "top-places", from, to], queryFn: () => api.topPlaces(from, to) });
-  const magnitudeBands = useQuery({ queryKey: ["earthquakes", "magnitude-bands", from, to], queryFn: () => api.magnitudeBands(from, to) });
-  const depthBands = useQuery({ queryKey: ["earthquakes", "depth-bands", from, to], queryFn: () => api.depthBands(from, to) });
-  const rollups = useQuery({ queryKey: ["earthquakes", "rollups", from, to, net, rollupBucket], queryFn: () => api.networkRollups(from, to, net, rollupBucket) });
+  const alerts = useQuery({ queryKey: ["anomalies", "history", from, to], queryFn: () => apiService.anomalyHistory(from, to), staleTime: 0 });
+  const status = useQuery({ queryKey: ["ingestion", "status"], queryFn: apiService.ingestionStatus });
+  const timeseries = useQuery({ queryKey: ["earthquakes", "timeseries", from, to, bucket], queryFn: () => apiService.timeseries(from, to, bucket) });
+  const networks = useQuery({ queryKey: ["earthquakes", "top-networks", from, to], queryFn: () => apiService.topNetworks(from, to) });
+  const places = useQuery({ queryKey: ["earthquakes", "top-places", from, to], queryFn: () => apiService.topPlaces(from, to) });
+  const magnitudeBands = useQuery({ queryKey: ["earthquakes", "magnitude-bands", from, to], queryFn: () => apiService.magnitudeBands(from, to) });
+  const depthBands = useQuery({ queryKey: ["earthquakes", "depth-bands", from, to], queryFn: () => apiService.depthBands(from, to) });
+  const rollups = useQuery({ queryKey: ["earthquakes", "rollups", from, to, net, rollupBucket], queryFn: () => apiService.networkRollups(from, to, net, rollupBucket) });
 
   const magnitudeFrequency = useQuery<MagFrequencyBucket[]>({
     queryKey: ["earthquakes", "magnitude-frequency", from, to],
-    queryFn: () => api.magnitudeFrequency(from!, to!),
+    queryFn: () => apiService.magnitudeFrequency(from!, to!),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });
   const energyTimeseries = useQuery<EnergyBucket[]>({
     queryKey: ["earthquakes", "energy-timeseries", from, to, bucket],
-    queryFn: () => api.energyTimeseries(from!, to!, bucket),
+    queryFn: () => apiService.energyTimeseries(from!, to!, bucket),
     enabled: !!from && !!to,
     staleTime: 60_000,
   });
   const bValueHistory = useQuery<BValueBucket[]>({
     queryKey: ["earthquakes", "b-value-history", from, to],
-    queryFn: () => api.bValueHistory(from!, to!),
+    queryFn: () => apiService.bValueHistory(from!, to!),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });
   const interEventTimes = useQuery<IETBucket[]>({
     queryKey: ["earthquakes", "inter-event-times", from, to],
-    queryFn: () => api.interEventTimes(from!, to!),
+    queryFn: () => apiService.interEventTimes(from!, to!),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });

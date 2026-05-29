@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { cellToBoundary, getResolution, latLngToCell } from "h3-js";
 import { Box } from "@mui/material";
 import type { AnomalyEvent, EarthquakeEvent, HeatmapCell } from "../api/client";
+import { parseApiDate, utcDateTimeLabel } from "../utils/dates";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const TECTONIC_URL =
@@ -141,18 +142,11 @@ function buildAnomalyHexGeoJSON(alerts: AnomalyEvent[], resolution: number) {
   return { type: "FeatureCollection" as const, features } as Parameters<maplibregl.GeoJSONSource["setData"]>[0];
 }
 
-function utcLabel(iso: string): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short",
-  }).format(new Date(iso));
-}
-
 function eventPopupHTML(ev: EarthquakeEvent): string {
   return (
     `<strong>M${ev.magnitude.toFixed(1)} ${ev.place || "Unknown"}</strong><br/>` +
     `Depth ${ev.depth_km.toFixed(1)} km · ${ev.net || "?"}<br/>` +
-    `<span style="font-size:0.78em;color:#64748b">${utcLabel(ev.time)}</span>`
+    `<span style="font-size:0.78em;color:#64748b">${utcDateTimeLabel(ev.time)}</span>`
   );
 }
 
@@ -166,14 +160,14 @@ function addCursorPointer(map: maplibregl.Map, layerId: string): void {
 }
 
 function anomalyPopupHTML(alert: AnomalyEvent): string {
-  const displayTime = alert.event_time && new Date(alert.event_time).getFullYear() > 2000
+  const displayTime = alert.event_time && parseApiDate(alert.event_time).getUTCFullYear() > 2000
     ? alert.event_time
     : alert.detected_at;
   return (
     `<strong>${alert.anomaly_type.replaceAll("_", " ")}</strong><br/>` +
     `${alert.severity} · ${alert.source_place || "Unknown"}<br/>` +
     `<span>${alert.detail}</span><br/>` +
-    `<span style="font-size:0.78em;color:#64748b">${utcLabel(displayTime)}</span>`
+    `<span style="font-size:0.78em;color:#64748b">${utcDateTimeLabel(displayTime)}</span>`
   );
 }
 
@@ -456,6 +450,13 @@ export function MapLibreView({
     if (!map || !isLoadedRef.current) return;
     pushData(map);
   }, [events, heatmapCells, alertIds, alerts, showEventHexes, showSignalHexes, showEventNodes, showSignalNodes, anomalyHexResolution]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Clear stale popup when parent clears map focus ────────────────────────
+  useEffect(() => {
+    if (selectedEvent || focusLatLon) return;
+    popupRef.current?.remove();
+    popupRef.current = null;
+  }, [selectedEvent, focusLatLon]);
 
   // ── FlyTo + popup for selected event ──────────────────────────────────────
   useEffect(() => {
