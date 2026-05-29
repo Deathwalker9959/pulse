@@ -8,9 +8,58 @@ from controllers.anomaly import detect_anomalies, historical_pattern_anomalies
 from models import AnomalyType, EarthquakeEvent, Severity
 
 
+class _FakePipeline:
+    def __init__(self, redis: "FakeRedis") -> None:
+        self._redis = redis
+        self._queue: list = []
+
+    def zadd(self, key, mapping):
+        self._queue.append(("zadd", key, mapping))
+        return self
+
+    def expire(self, key, seconds):
+        self._queue.append(("expire", key, seconds))
+        return self
+
+    def zremrangebyscore(self, key, min_score, max_score):
+        self._queue.append(("zremrangebyscore", key, min_score, max_score))
+        return self
+
+    def zrangebyscore(self, key, min_score, max_score):
+        self._queue.append(("zrangebyscore", key, min_score, max_score))
+        return self
+
+    def set(self, key, value, ex=None):
+        self._queue.append(("set", key, value, ex))
+        return self
+
+    def get(self, key):
+        self._queue.append(("get", key))
+        return self
+
+    def incr(self, key):
+        self._queue.append(("incr", key))
+        return self
+
+    async def execute(self):
+        results = []
+        for cmd, *args in self._queue:
+            fn = getattr(self._redis, cmd)
+            results.append(await fn(*args))
+        return results
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        pass
+
+
 class FakeRedis:
     def __init__(self) -> None:
         self.lists: dict[str, list[float | int]] = {}
+        self.strings: dict[str, str] = {}
+        self.counters: dict[str, int] = {}
 
     async def lrange(self, key: str, start: int, end: int):
         return self.lists.get(key, [1.0, 1.1, 1.0, 1.2])
@@ -25,13 +74,15 @@ class FakeRedis:
         return True
 
     async def set(self, key: str, value: str, ex: int | None = None):
+        self.strings[key] = value
         return True
 
     async def get(self, key: str):
-        return None
+        return self.strings.get(key)
 
     async def incr(self, key: str):
-        return 1
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
 
     async def zadd(self, key: str, mapping: dict):
         return True
@@ -41,6 +92,9 @@ class FakeRedis:
 
     async def zrangebyscore(self, key: str, min_score, max_score):
         return []
+
+    def pipeline(self, transaction: bool = True):
+        return _FakePipeline(self)
 
 
 def quake(**overrides) -> EarthquakeEvent:
@@ -70,6 +124,39 @@ async def test_significant_event_detection_uses_earthquake_fields() -> None:
     assert alert.severity == Severity.CRITICAL
     assert alert.source_event_id == "us-alert"
     assert "Major impact event" in alert.detail
+
+
+@pytest.mark.asyncio
+async def test_aftershock_cascade_uses_pipelined_mainshock_state() -> None:
+    events = [
+        quake(event_id="mainshock", magnitude=6.0, latitude=35.0, longitude=33.0, alert="", significance=100),
+        quake(event_id="aftershock", magnitude=3.2, latitude=35.1, longitude=33.1, alert="", significance=100),
+    ]
+
+    anomalies = await detect_anomalies(events, FakeRedis())
+
+    assert any(
+        item.anomaly_type == AnomalyType.AFTERSHOCK_CASCADE
+        and item.source_event_id == "aftershock"
+        for item in anomalies
+    )
+
+
+@pytest.mark.asyncio
+async def test_deep_focus_cluster_uses_pipelined_counts() -> None:
+    events = [
+        quake(event_id="deep-1", magnitude=4.1, depth_km=520, latitude=-20.0, longitude=-178.0, alert="", significance=300),
+        quake(event_id="deep-2", magnitude=4.2, depth_km=540, latitude=-20.1, longitude=-178.1, alert="", significance=310),
+        quake(event_id="deep-3", magnitude=4.3, depth_km=560, latitude=-20.2, longitude=-178.2, alert="", significance=320),
+    ]
+
+    anomalies = await detect_anomalies(events, FakeRedis())
+
+    assert any(
+        item.anomaly_type == AnomalyType.DEEP_FOCUS_CLUSTER
+        and item.source_event_id == "deep-3"
+        for item in anomalies
+    )
 
 
 

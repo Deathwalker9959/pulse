@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import io
 import os
 from datetime import datetime, timezone
@@ -38,6 +40,18 @@ anomaly_router = APIRouter(prefix="/api/anomalies", tags=["anomalies"])
 ingestion_router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
 
 
+def _apply_range(
+    preset: str | None,
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+) -> tuple[datetime | None, datetime | None, str]:
+    if preset is None:
+        return from_ts, to_ts, ""
+    if preset not in RANGE_PRESETS:
+        raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
+    return resolve_range(preset)
+
+
 @earthquake_router.get("/live")
 async def live(
     from_ts: Annotated[datetime | None, Query(alias="from")] = None,
@@ -46,10 +60,7 @@ async def live(
     min_magnitude: Annotated[float, Query(alias="min_magnitude", ge=0.0, le=10.0)] = 0.0,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_live(redis=redis, from_ts=from_ts, to_ts=to_ts, min_magnitude=min_magnitude)
 
 
@@ -75,9 +86,7 @@ async def atlas(
 
 
 async def _run_in_thread(fn, *args):
-    import asyncio, functools
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, functools.partial(fn, *args))
+    return await asyncio.get_running_loop().run_in_executor(None, functools.partial(fn, *args))
 
 
 @earthquake_router.get("/heatmap")
@@ -98,11 +107,8 @@ async def timeseries(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, bucket = resolve_range(range_preset)
-    return await get_timeseries(redis=redis, bucket=bucket, from_ts=from_ts, to_ts=to_ts)
+    from_ts, to_ts, resolved_bucket = _apply_range(range_preset, from_ts, to_ts)
+    return await get_timeseries(redis=redis, bucket=resolved_bucket or bucket, from_ts=from_ts, to_ts=to_ts)
 
 
 @earthquake_router.get("/top-networks")
@@ -113,10 +119,7 @@ async def top_networks(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_top_n(redis=redis, field="net", limit=limit, from_ts=from_ts, to_ts=to_ts)
 
 
@@ -128,10 +131,7 @@ async def top_places(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_top_n(redis=redis, field="place", limit=limit, from_ts=from_ts, to_ts=to_ts)
 
 
@@ -142,10 +142,7 @@ async def magnitude_bands(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_magnitude_bands(redis=redis, from_ts=from_ts, to_ts=to_ts)
 
 
@@ -156,10 +153,7 @@ async def depth_bands(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     return await get_depth_bands(redis=redis, from_ts=from_ts, to_ts=to_ts)
 
 
@@ -182,10 +176,8 @@ async def network_rollups(
     limit: Annotated[int, Query(ge=1, le=10_000)] = 500,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, bucket = resolve_range(range_preset)
+    from_ts, to_ts, resolved_bucket = _apply_range(range_preset, from_ts, to_ts)
+    bucket = resolved_bucket or bucket
     if bucket not in VALID_BUCKETS:
         raise HTTPException(status_code=422, detail=f"bucket must be one of {sorted(VALID_BUCKETS)}")
     return await get_network_rollups(redis=redis, bucket=bucket, from_ts=from_ts, to_ts=to_ts, net=net, limit=limit)
@@ -219,10 +211,7 @@ async def b_value_history(
     range_preset: Annotated[str | None, Query(alias="range")] = None,
     redis=Depends(get_redis),
 ) -> list[dict]:
-    if range_preset is not None:
-        if range_preset not in RANGE_PRESETS:
-            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
-        from_ts, to_ts, _ = resolve_range(range_preset)
+    from_ts, to_ts, _ = _apply_range(range_preset, from_ts, to_ts)
     if not from_ts or not to_ts:
         from_ts, to_ts, _ = resolve_range("30d")
     return await get_b_value_history(redis=redis, from_ts=from_ts, to_ts=to_ts)

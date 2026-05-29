@@ -43,6 +43,21 @@ def resolve_range(name: str) -> tuple[datetime, datetime, str]:
     return t0, now, bucket
 
 
+_BUCKET_INTERVAL = {
+    "1m": "1 MINUTE", "5m": "5 MINUTE", "15m": "15 MINUTE",
+    "1h": "1 HOUR",   "6h": "6 HOUR",   "1d":  "1 DAY",
+}
+
+
+def _bucket_expr(bucket: str) -> str:
+    if bucket == "1mo":
+        return "toStartOfMonth(time, 'UTC')"
+    if bucket == "1y":
+        return "toStartOfYear(time, 'UTC')"
+    interval = _BUCKET_INTERVAL[bucket]
+    return f"toStartOfInterval(time, INTERVAL {interval}, 'UTC')"
+
+
 def cache_ttl(to_ts: datetime | None) -> int:
     target = to_ts or datetime.now(timezone.utc)
     aware = target if target.tzinfo else target.replace(tzinfo=timezone.utc)
@@ -72,20 +87,7 @@ async def get_top_n(*, redis, field: Literal["net", "place"], limit: int, from_t
 @cached(ttl=30, key_prefix="stats:timeseries")
 async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h", "1d", "1mo", "1y"], from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
     t0, t1 = from_ts or default_window()[0], to_ts or default_window()[1]
-    if bucket == "1mo":
-        bucket_expr = "toStartOfMonth(time, 'UTC')"
-    elif bucket == "1y":
-        bucket_expr = "toStartOfYear(time, 'UTC')"
-    else:
-        interval = {
-            "1m": "1 MINUTE",
-            "5m": "5 MINUTE",
-            "15m": "15 MINUTE",
-            "1h": "1 HOUR",
-            "6h": "6 HOUR",
-            "1d": "1 DAY",
-        }[bucket]
-        bucket_expr = f"toStartOfInterval(time, INTERVAL {interval}, 'UTC')"
+    bucket_expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
             bucket_time AS time,
@@ -151,20 +153,7 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
         raise ValueError(f"bucket must be one of {sorted(VALID_BUCKETS)}")
     t0, t1 = from_ts or default_window()[0], to_ts or default_window()[1]
     network = net.strip()
-    if bucket == "1mo":
-        bucket_expr = "toStartOfMonth(time, 'UTC')"
-    elif bucket == "1y":
-        bucket_expr = "toStartOfYear(time, 'UTC')"
-    else:
-        interval = {
-            "1m": "1 MINUTE",
-            "5m": "5 MINUTE",
-            "15m": "15 MINUTE",
-            "1h": "1 HOUR",
-            "6h": "6 HOUR",
-            "1d": "1 DAY",
-        }[bucket]
-        bucket_expr = f"toStartOfInterval(time, INTERVAL {interval}, 'UTC')"
+    bucket_expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
             {bucket_expr} AS bucket,

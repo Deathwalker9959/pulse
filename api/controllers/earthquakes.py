@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import bisect
 import io
 import math
 from datetime import datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
 
+from controllers.stats import _bucket_expr
 from decorators import cached
 from db import query
 
@@ -124,20 +126,7 @@ _IET_BINS: list[tuple[str, float, float]] = [
     ("2–12h",   7_200,  43_200),
     ("12h+",    43_200, float("inf")),
 ]
-
-_BUCKET_INTERVAL = {
-    "1m": "1 MINUTE", "5m": "5 MINUTE", "15m": "15 MINUTE",
-    "1h": "1 HOUR",   "6h": "6 HOUR",   "1d":  "1 DAY",
-}
-
-
-def _bucket_expr(bucket: str) -> str:
-    if bucket == "1mo":
-        return "toStartOfMonth(time, 'UTC')"
-    if bucket == "1y":
-        return "toStartOfYear(time, 'UTC')"
-    interval = _BUCKET_INTERVAL.get(bucket, "1 DAY")
-    return f"toStartOfInterval(time, INTERVAL {interval}, 'UTC')"
+_IET_BOUNDARIES = [lo for _, lo, _ in _IET_BINS[1:]]  # lower bounds for bisect, skipping bin 0
 
 
 @cached(ttl=120, key_prefix="earthquakes:magfreq")
@@ -195,11 +184,11 @@ async def get_inter_event_times(*, redis, from_ts: datetime, to_ts: datetime) ->
     if len(rows) < 2:
         return [{"bin_label": label, "count": 0} for label, *_ in _IET_BINS]
     times = [r["time"] for r in rows]
-    iets = [(times[i] - times[i - 1]).total_seconds() for i in range(1, len(times))]
-    return [
-        {"bin_label": label, "count": sum(1 for t in iets if lo <= t < hi)}
-        for label, lo, hi in _IET_BINS
-    ]
+    counts = [0] * len(_IET_BINS)
+    for i in range(1, len(times)):
+        dt = (times[i] - times[i - 1]).total_seconds()
+        counts[bisect.bisect_right(_IET_BOUNDARIES, dt)] += 1
+    return [{"bin_label": label, "count": counts[i]} for i, (label, *_) in enumerate(_IET_BINS)]
 
 
 @cached(ttl=60, key_prefix="earthquakes:heatmap")

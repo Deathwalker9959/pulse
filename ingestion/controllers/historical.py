@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, timedelta, timezone
+from itertools import chain
 from typing import Iterator
 
-import clickhouse_connect
 import httpx
 
 from controllers.anomaly import _data_quality, _significant_events, _tsunami_risk, historical_pattern_anomalies
+from db import get_clickhouse_client
 from decorators import retry
 from models import EarthquakeEvent
 from writer import write_anomalies, write_earthquakes
@@ -86,7 +86,7 @@ async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetim
     events = [EarthquakeEvent(**row) for row in result.named_results()]
     if not events:
         return 0
-    anomalies = _significant_events(events) + _tsunami_risk(events) + _data_quality(events) + historical_pattern_anomalies(events)
+    anomalies = list(chain(_significant_events(events), _tsunami_risk(events), _data_quality(events), historical_pattern_anomalies(events)))
     if not anomalies:
         return 0
     await write_anomalies(clickhouse, anomalies)
@@ -100,13 +100,7 @@ def _seconds_until_midnight() -> float:
 
 
 async def run_historical_sync() -> None:
-    clickhouse = await clickhouse_connect.get_async_client(
-        host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-        port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
-        database=os.getenv("CLICKHOUSE_DB", "default"),
-        username=os.getenv("CLICKHOUSE_USER", "default"),
-        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
-    )
+    clickhouse = await get_clickhouse_client()
     http = httpx.AsyncClient(
         headers={"User-Agent": "PULSE/historical-sync"},
         follow_redirects=True,
@@ -123,20 +117,36 @@ async def run_historical_sync() -> None:
                     await asyncio.sleep(wait)
                     continue
                 logger.info("historical sync: %s → %s", last, target)
-                for t0, t1 in month_ranges(last, target):
-                    logger.info("syncing %s – %s", t0, t1)
-                    try:
-                        events = await fetch_month(http, t0, t1)
-                    except Exception:
-                        logger.exception("failed to fetch %s – %s; skipping", t0, t1)
-                        continue
-                    if events:
-                        await write_earthquakes(clickhouse, events)
-                        start_dt = datetime.combine(t0, datetime.min.time(), tzinfo=timezone.utc)
-                        end_dt = datetime.combine(t1 + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc) - timedelta(seconds=1)
-                        anomaly_count = await backfill_anomalies_for_range(clickhouse, start_dt, end_dt)
-                        logger.info("  wrote %d events, %d anomalies", len(events), anomaly_count)
-                    await set_last_synced(clickhouse, t1)
+                months = list(month_ranges(last, target))
+                prefetch: asyncio.Task[list[EarthquakeEvent]] | None = (
+                    asyncio.create_task(fetch_month(http, *months[0])) if months else None
+                )
+                try:
+                    for i, (t0, t1) in enumerate(months):
+                        logger.info("syncing %s – %s", t0, t1)
+                        try:
+                            events = await prefetch if prefetch else []
+                        except Exception:
+                            logger.exception("failed to fetch %s – %s; skipping", t0, t1)
+                            events = []
+
+                        prefetch = (
+                            asyncio.create_task(fetch_month(http, *months[i + 1]))
+                            if i + 1 < len(months) else None
+                        )
+
+                        if events:
+                            await write_earthquakes(clickhouse, events)
+                            start_dt = datetime.combine(t0, datetime.min.time(), tzinfo=timezone.utc)
+                            end_dt = datetime.combine(t1 + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc) - timedelta(seconds=1)
+                            anomaly_count = await backfill_anomalies_for_range(clickhouse, start_dt, end_dt)
+                            logger.info("  wrote %d events, %d anomalies", len(events), anomaly_count)
+                        await set_last_synced(clickhouse, t1)
+                finally:
+                    if prefetch is not None:
+                        if not prefetch.done():
+                            prefetch.cancel()
+                        await asyncio.gather(prefetch, return_exceptions=True)
                 logger.info("historical sync pass complete")
             except asyncio.CancelledError:
                 raise

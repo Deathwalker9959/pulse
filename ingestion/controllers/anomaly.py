@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import statistics
 from collections import Counter
@@ -28,20 +29,48 @@ FORESHOCK_FREQ_RATIO = 2.0
 FORESHOCK_MAG_DELTA = 0.5
 
 
+async def _rolling_zscore(redis, key: str, current: float, window: int = 12, ttl: int = 3600) -> float | None:
+    """Push `current` onto a Redis list, keep last `window` values, return z-score vs history.
+
+    Returns None when there are fewer than 4 prior values or zero standard deviation.
+    """
+    history_raw = await redis.lrange(key, 0, -1)
+    await redis.lpush(key, current)
+    await redis.ltrim(key, 0, window - 1)
+    await redis.expire(key, ttl)
+    if len(history_raw) < 4:
+        return None
+    history = [float(v) for v in history_raw]
+    stdev = statistics.stdev(history)
+    if stdev == 0:
+        return None
+    return (current - statistics.mean(history)) / stdev
+
+
+def _geohash(event: EarthquakeEvent, precision: int) -> str:
+    try:
+        return pygeohash.encode(event.latitude, event.longitude, precision=precision)
+    except Exception:
+        return ""
+
+
 async def detect_anomalies(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
-    anomalies: list[AnomalyEvent] = []
-    anomalies.extend(_significant_events(events))
-    anomalies.extend(_tsunami_risk(events))
-    anomalies.extend(await _magnitude_spike(events, redis))
-    anomalies.extend(await _swarm_detection(events, redis))
-    anomalies.extend(await _energy_burst(events, redis))
-    anomalies.extend(await _aftershock_cascade(events, redis))
-    anomalies.extend(await _rate_anomalies(events, redis))
-    anomalies.extend(await _deep_focus_cluster(events, redis))
-    anomalies.extend(_b_value_shift(events))
-    anomalies.extend(_data_quality(events))
-    anomalies.extend(await _foreshock_sequence(events, redis))
-    return anomalies
+    sync = (
+        _significant_events(events)
+        + _tsunami_risk(events)
+        + _b_value_shift(events)
+        + _data_quality(events)
+    )
+    batches = await asyncio.gather(
+        _magnitude_spike(events, redis),
+        _swarm_detection(events, redis),
+        _energy_burst(events, redis),
+        _aftershock_cascade(events, redis),
+        _rate_anomalies(events, redis),
+        _deep_focus_cluster(events, redis),
+        _foreshock_sequence(events, redis),
+    )
+    return sync + [item for batch in batches for item in batch]
 
 
 def _alert(
@@ -109,48 +138,35 @@ def historical_pattern_anomalies(events: list[EarthquakeEvent]) -> list[AnomalyE
     positioned = sorted((event for event in events if event.has_position()), key=lambda event: event.time)
     anomalies: dict[tuple[str, AnomalyType], AnomalyEvent] = {}
 
-    def add(event: EarthquakeEvent, anomaly_type: AnomalyType, severity: Severity, detail: str) -> None:
-        anomalies[(event.event_id, anomaly_type)] = _alert(event, anomaly_type, severity, detail)
-
     for event in _historical_deep_focus_clusters(positioned):
-        add(
-            event,
-            AnomalyType.DEEP_FOCUS_CLUSTER,
-            Severity.WARNING,
-            f"Deep focus cluster: 3+ events >300 km depth in {_gh3(event)} within 24 hours",
+        anomalies[(event.event_id, AnomalyType.DEEP_FOCUS_CLUSTER)] = _alert(
+            event, AnomalyType.DEEP_FOCUS_CLUSTER, Severity.WARNING,
+            f"Deep focus cluster: 3+ events >300 km depth in {_geohash(event, 3)} within 24 hours",
         )
 
     for event, mainshock in _historical_aftershock_cascades(positioned):
-        add(
-            event,
-            AnomalyType.AFTERSHOCK_CASCADE,
-            Severity.WARNING,
+        anomalies[(event.event_id, AnomalyType.AFTERSHOCK_CASCADE)] = _alert(
+            event, AnomalyType.AFTERSHOCK_CASCADE, Severity.WARNING,
             f"Aftershock cascade: M{event.magnitude:.1f} event near M{mainshock.magnitude:.1f} mainshock ({mainshock.event_id})",
         )
 
     for event, count, z_score, cell in _historical_swarm_events(positioned):
-        add(
-            event,
-            AnomalyType.SWARM_DETECTION,
-            Severity.WARNING,
+        anomalies[(event.event_id, AnomalyType.SWARM_DETECTION)] = _alert(
+            event, AnomalyType.SWARM_DETECTION, Severity.WARNING,
             f"Regional swarm: {count} events/hour in geohash {cell}, {z_score:.1f} standard deviations above baseline",
         )
 
     for event, count, ratio, recent_max in _historical_foreshock_sequences(positioned):
-        severity = Severity.WARNING if recent_max >= 5.0 else Severity.INFO
-        add(
-            event,
-            AnomalyType.FORESHOCK_SEQUENCE,
-            severity,
-            f"Foreshock sequence in {_gh3(event)}: {count} events/24h ({ratio:.1f}x accel), max M{recent_max:.1f}.",
+        anomalies[(event.event_id, AnomalyType.FORESHOCK_SEQUENCE)] = _alert(
+            event, AnomalyType.FORESHOCK_SEQUENCE,
+            Severity.WARNING if recent_max >= 5.0 else Severity.INFO,
+            f"Foreshock sequence in {_geohash(event, 3)}: {count} events/24h ({ratio:.1f}x accel), max M{recent_max:.1f}.",
         )
 
     for event, b_value, sample_size in _historical_b_value_anomalies(positioned):
-        severity = Severity.CRITICAL if b_value < 0.5 else Severity.WARNING
-        add(
-            event,
-            AnomalyType.B_VALUE_ANOMALY,
-            severity,
+        anomalies[(event.event_id, AnomalyType.B_VALUE_ANOMALY)] = _alert(
+            event, AnomalyType.B_VALUE_ANOMALY,
+            Severity.CRITICAL if b_value < 0.5 else Severity.WARNING,
             f"B-value anomaly: b={b_value:.2f} (normal ≈ 1.0) from {sample_size} events — elevated crustal stress indicated",
         )
 
@@ -163,7 +179,7 @@ def _historical_deep_focus_clusters(events: list[EarthquakeEvent]) -> list[Earth
     for event in events:
         if event.depth_km <= 300:
             continue
-        region = _gh3(event)
+        region = _geohash(event, 3)
         if not region:
             continue
         region_events = by_region.setdefault(region, [])
@@ -179,7 +195,7 @@ def _historical_aftershock_cascades(events: list[EarthquakeEvent]) -> list[tuple
     result: list[tuple[EarthquakeEvent, EarthquakeEvent]] = []
     mainshocks: dict[str, list[EarthquakeEvent]] = {}
     for event in events:
-        region = _gh3(event)
+        region = _geohash(event, 3)
         if not region:
             continue
         cutoff = event.time.timestamp() - MAINSHOCK_TTL
@@ -197,9 +213,8 @@ def _historical_aftershock_cascades(events: list[EarthquakeEvent]) -> list[tuple
 def _historical_swarm_events(events: list[EarthquakeEvent]) -> list[tuple[EarthquakeEvent, int, float, str]]:
     by_cell_hour: dict[tuple[str, datetime], list[EarthquakeEvent]] = {}
     for event in events:
-        try:
-            cell = pygeohash.encode(event.latitude, event.longitude, precision=5)
-        except Exception:
+        cell = _geohash(event, 5)
+        if not cell:
             continue
         hour = event.time.replace(minute=0, second=0, microsecond=0)
         by_cell_hour.setdefault((cell, hour), []).append(event)
@@ -228,7 +243,7 @@ def _historical_foreshock_sequences(events: list[EarthquakeEvent]) -> list[tuple
     result: list[tuple[EarthquakeEvent, int, float, float]] = []
     by_region: dict[str, list[EarthquakeEvent]] = {}
     for event in events:
-        region = _gh3(event)
+        region = _geohash(event, 3)
         if not region:
             continue
         region_events = by_region.setdefault(region, [])
@@ -255,7 +270,7 @@ def _historical_b_value_anomalies(events: list[EarthquakeEvent]) -> list[tuple[E
     for event in events:
         if event.magnitude < B_VALUE_MC:
             continue
-        region = _gh3(event)
+        region = _geohash(event, 3)
         if not region:
             continue
         region_events = by_region.setdefault(region, [])
@@ -275,28 +290,13 @@ def _historical_b_value_anomalies(events: list[EarthquakeEvent]) -> list[tuple[E
 async def _magnitude_spike(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
     if not events:
         return []
-    current = max(event.magnitude for event in events)
-    history_raw = await redis.lrange(MAG_HISTORY_KEY, 0, -1)
-    await redis.lpush(MAG_HISTORY_KEY, current)
-    await redis.ltrim(MAG_HISTORY_KEY, 0, 11)
-    await redis.expire(MAG_HISTORY_KEY, 3600)
-    if len(history_raw) < 4:
+    current = max(e.magnitude for e in events)
+    z = await _rolling_zscore(redis, MAG_HISTORY_KEY, current)
+    if z is None or z <= 2.5:
         return []
-    history = [float(value) for value in history_raw]
-    stdev = statistics.stdev(history)
-    if stdev == 0:
-        return []
-    mean = statistics.mean(history)
-    z_score = (current - mean) / stdev
-    if z_score <= 2.5:
-        return []
-    trigger = max(events, key=lambda event: event.magnitude)
-    return [_alert(
-        trigger,
-        AnomalyType.MAGNITUDE_SPIKE,
-        Severity.WARNING,
-        f"Magnitude spike: M{current:.1f} is {z_score:.1f} standard deviations above recent batches",
-    )]
+    trigger = max(events, key=lambda e: e.magnitude)
+    return [_alert(trigger, AnomalyType.MAGNITUDE_SPIKE, Severity.WARNING,
+                   f"Magnitude spike: M{current:.1f} is {z:.1f} standard deviations above recent batches")]
 
 
 async def _swarm_detection(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
@@ -304,68 +304,38 @@ async def _swarm_detection(events: list[EarthquakeEvent], redis) -> list[Anomaly
     if not positioned:
         return []
 
-    def cell(event: EarthquakeEvent) -> str:
-        try:
-            return pygeohash.encode(event.latitude, event.longitude, precision=5)
-        except Exception:
-            return ""
-
-    counts = Counter(cell(event) for event in positioned)
+    counts = Counter(_geohash(event, 5) for event in positioned)
     counts.pop("", None)
     if not counts:
         return []
 
+    geohashes = list(counts)
+    z_scores = await asyncio.gather(*(
+        _rolling_zscore(redis, f"{SWARM_PREFIX}{geohash}", float(counts[geohash]), window=6)
+        for geohash in geohashes
+    ))
+
     result: list[AnomalyEvent] = []
-    for geohash, current in counts.items():
-        key = f"{SWARM_PREFIX}{geohash}"
-        history_raw = await redis.lrange(key, 0, -1)
-        await redis.lpush(key, current)
-        await redis.ltrim(key, 0, 5)
-        await redis.expire(key, 3600)
-        if current < 3 or len(history_raw) < 4:
+    for geohash, z in zip(geohashes, z_scores):
+        current = counts[geohash]
+        if current < 3 or z is None or z <= 3:
             continue
-        history = [int(value) for value in history_raw]
-        stdev = statistics.stdev(history)
-        if stdev == 0:
-            continue
-        mean = statistics.mean(history)
-        z_score = (current - mean) / stdev
-        if z_score > 3:
-            sample = next(event for event in positioned if cell(event) == geohash)
-            result.append(_alert(
-                sample,
-                AnomalyType.SWARM_DETECTION,
-                Severity.WARNING,
-                f"Regional swarm: {current} events in geohash {geohash}, {z_score:.1f} standard deviations above baseline",
-            ))
+        sample = next(e for e in positioned if _geohash(e, 5) == geohash)
+        result.append(_alert(sample, AnomalyType.SWARM_DETECTION, Severity.WARNING,
+                             f"Regional swarm: {current} events in geohash {geohash}, {z:.1f} standard deviations above baseline"))
     return result
 
 
 async def _energy_burst(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
     if not events:
         return []
-    current = sum(10 ** (1.5 * event.magnitude) for event in events)
-    history_raw = await redis.lrange(ENERGY_HISTORY_KEY, 0, -1)
-    await redis.lpush(ENERGY_HISTORY_KEY, current)
-    await redis.ltrim(ENERGY_HISTORY_KEY, 0, 11)
-    await redis.expire(ENERGY_HISTORY_KEY, 3600)
-    if len(history_raw) < 4:
-        return []
-    history = [float(v) for v in history_raw]
-    stdev = statistics.stdev(history)
-    if stdev == 0:
-        return []
-    mean = statistics.mean(history)
-    z_score = (current - mean) / stdev
-    if z_score <= 2.5:
+    current = sum(10 ** (1.5 * e.magnitude) for e in events)
+    z = await _rolling_zscore(redis, ENERGY_HISTORY_KEY, current)
+    if z is None or z <= 2.5:
         return []
     trigger = max(events, key=lambda e: e.magnitude)
-    return [_alert(
-        trigger,
-        AnomalyType.ENERGY_BURST,
-        Severity.WARNING,
-        f"Energy burst: cumulative seismic energy {z_score:.1f} standard deviations above recent batches",
-    )]
+    return [_alert(trigger, AnomalyType.ENERGY_BURST, Severity.WARNING,
+                   f"Energy burst: cumulative seismic energy {z:.1f} standard deviations above recent batches")]
 
 
 async def _aftershock_cascade(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
@@ -373,28 +343,30 @@ async def _aftershock_cascade(events: list[EarthquakeEvent], redis) -> list[Anom
     if not positioned:
         return []
 
+    mainshocks = [(event, _geohash(event, 3)) for event in positioned if event.magnitude >= 5.5]
+    mainshocks = [(event, geohash) for event, geohash in mainshocks if geohash]
+    if mainshocks:
+        async with redis.pipeline(transaction=False) as pipe:
+            for event, geohash in mainshocks:
+                pipe.set(f"{MAINSHOCK_PREFIX}{geohash}", f"{event.event_id}:{event.magnitude:.2f}", ex=MAINSHOCK_TTL)
+            await pipe.execute()
+
+    aftershocks = [(event, _geohash(event, 3)) for event in positioned if event.magnitude < 5.5]
+    aftershocks = [(event, geohash) for event, geohash in aftershocks if geohash]
+    if not aftershocks:
+        return []
+
+    async with redis.pipeline(transaction=False) as pipe:
+        for _, geohash in aftershocks:
+            pipe.get(f"{MAINSHOCK_PREFIX}{geohash}")
+        mainshock_raws = await pipe.execute()
+
     result: list[AnomalyEvent] = []
-
-    for event in positioned:
-        if event.magnitude >= 5.5:
-            try:
-                mainshock_geohash = pygeohash.encode(event.latitude, event.longitude, precision=3)
-            except Exception:
-                continue
-            key = f"{MAINSHOCK_PREFIX}{mainshock_geohash}"
-            await redis.set(key, f"{event.event_id}:{event.magnitude:.2f}", ex=MAINSHOCK_TTL)
-
-    for event in positioned:
-        if event.magnitude >= 5.5:
-            continue
-        try:
-            geohash3 = pygeohash.encode(event.latitude, event.longitude, precision=3)
-        except Exception:
-            continue
-        key = f"{MAINSHOCK_PREFIX}{geohash3}"
-        mainshock_raw = await redis.get(key)
+    for (event, _), mainshock_raw in zip(aftershocks, mainshock_raws):
         if not mainshock_raw:
             continue
+        if isinstance(mainshock_raw, bytes):
+            mainshock_raw = mainshock_raw.decode()
         try:
             mainshock_id, mainshock_mag = mainshock_raw.rsplit(":", 1)
             mainshock_mag = float(mainshock_mag)
@@ -413,38 +385,17 @@ async def _aftershock_cascade(events: list[EarthquakeEvent], redis) -> list[Anom
 
 
 async def _rate_anomalies(events: list[EarthquakeEvent], redis) -> list[AnomalyEvent]:
-    current = len(events)
-    history_raw = await redis.lrange(RATE_HISTORY_KEY, 0, -1)
-    await redis.lpush(RATE_HISTORY_KEY, current)
-    await redis.ltrim(RATE_HISTORY_KEY, 0, 11)
-    await redis.expire(RATE_HISTORY_KEY, 3600)
-    if len(history_raw) < 4:
+    z = await _rolling_zscore(redis, RATE_HISTORY_KEY, float(len(events)))
+    if z is None or not events:
         return []
-    history = [int(v) for v in history_raw]
-    stdev = statistics.stdev(history)
-    if stdev == 0:
-        return []
-    mean = statistics.mean(history)
-    z_score = (current - mean) / stdev
-    result: list[AnomalyEvent] = []
-    if z_score > 2.5 and events:
-        trigger = max(events, key=lambda e: e.magnitude)
-        result.append(_alert(
-            trigger,
-            AnomalyType.GLOBAL_RATE_SPIKE,
-            Severity.WARNING,
-            f"Global rate spike: {current} events in batch, {z_score:.1f} standard deviations above baseline",
-        ))
-    elif z_score < -2.5 and events:
-        # Significant drop in activity — potential precursor or data gap
-        trigger = max(events, key=lambda e: e.magnitude)
-        result.append(_alert(
-            trigger,
-            AnomalyType.SEISMIC_QUIESCENCE,
-            Severity.WARNING,
-            f"Seismic quiescence: only {current} events in batch, {abs(z_score):.1f} standard deviations below baseline",
-        ))
-    return result
+    trigger = max(events, key=lambda e: e.magnitude)
+    if z > 2.5:
+        return [_alert(trigger, AnomalyType.GLOBAL_RATE_SPIKE, Severity.WARNING,
+                       f"Global rate spike: {len(events)} events in batch, {z:.1f} standard deviations above baseline")]
+    if z < -2.5:
+        return [_alert(trigger, AnomalyType.SEISMIC_QUIESCENCE, Severity.WARNING,
+                       f"Seismic quiescence: only {len(events)} events in batch, {abs(z):.1f} standard deviations below baseline")]
+    return []
 
 
 def _tsunami_risk(events: list[EarthquakeEvent]) -> list[AnomalyEvent]:
@@ -487,22 +438,31 @@ async def _deep_focus_cluster(events: list[EarthquakeEvent], redis) -> list[Anom
     deep = [e for e in events if e.has_position() and e.depth_km > 300]
     if not deep:
         return []
+
+    items = [(event, _geohash(event, 3)) for event in deep]
+    items = [(event, geohash) for event, geohash in items if geohash]
+    if not items:
+        return []
+
+    async with redis.pipeline(transaction=False) as pipe:
+        for _, geohash in items:
+            pipe.incr(f"{DEEP_FOCUS_PREFIX}{geohash}")
+        counts = await pipe.execute()
+
+    async with redis.pipeline(transaction=False) as pipe:
+        for (_, geohash), count in zip(items, counts):
+            if count == 1:
+                pipe.expire(f"{DEEP_FOCUS_PREFIX}{geohash}", DEEP_FOCUS_TTL)
+        await pipe.execute()
+
     result: list[AnomalyEvent] = []
-    for event in deep:
-        try:
-            gh = pygeohash.encode(event.latitude, event.longitude, precision=3)
-        except Exception:
-            continue
-        key = f"{DEEP_FOCUS_PREFIX}{gh}"
-        count = await redis.incr(key)
-        if count == 1:
-            await redis.expire(key, DEEP_FOCUS_TTL)
+    for (event, geohash), count in zip(items, counts):
         if count == DEEP_FOCUS_THRESHOLD:
             result.append(_alert(
                 event,
                 AnomalyType.DEEP_FOCUS_CLUSTER,
                 Severity.WARNING,
-                f"Deep focus cluster: {count}+ events >300 km depth in region (geohash {gh}) within 24 hours",
+                f"Deep focus cluster: {count}+ events >300 km depth in region (geohash {geohash}) within 24 hours",
             ))
     return result
 
@@ -542,24 +502,25 @@ async def _foreshock_sequence(events: list[EarthquakeEvent], redis) -> list[Anom
     h72_ago = now_ts - 72 * 3600
 
     regions_updated: set[str] = set()
-    for event in positioned:
-        try:
-            gh3 = pygeohash.encode(event.latitude, event.longitude, precision=3)
-        except Exception:
-            continue
-        key = f"{FORESHOCK_PREFIX}{gh3}"
-        member = f"{event.event_id}:{event.magnitude:.1f}"
-        await redis.zadd(key, {member: event.time.timestamp()})
-        await redis.expire(key, FORESHOCK_TTL)
-        regions_updated.add(gh3)
+    async with redis.pipeline(transaction=False) as pipe:
+        for event in positioned:
+            gh3 = _geohash(event, 3)
+            if not gh3:
+                continue
+            key = f"{FORESHOCK_PREFIX}{gh3}"
+            pipe.zadd(key, {f"{event.event_id}:{event.magnitude:.1f}": event.time.timestamp()})
+            pipe.expire(key, FORESHOCK_TTL)
+            regions_updated.add(gh3)
+        await pipe.execute()
 
     anomalies: list[AnomalyEvent] = []
     for gh3 in regions_updated:
         key = f"{FORESHOCK_PREFIX}{gh3}"
-        await redis.zremrangebyscore(key, "-inf", h72_ago)
-
-        recent_raw = await redis.zrangebyscore(key, h24_ago, "+inf")
-        prior_raw = await redis.zrangebyscore(key, h72_ago, h24_ago)
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.zremrangebyscore(key, "-inf", h72_ago)
+            pipe.zrangebyscore(key, h24_ago, "+inf")
+            pipe.zrangebyscore(key, h72_ago, h24_ago)
+            _, recent_raw, prior_raw = await pipe.execute()
 
         if len(recent_raw) < FORESHOCK_MIN_RECENT or not prior_raw:
             continue
@@ -583,7 +544,7 @@ async def _foreshock_sequence(events: list[EarthquakeEvent], redis) -> list[Anom
             continue
 
         rep = max(
-            (e for e in positioned if _gh3(e) == gh3),
+            (e for e in positioned if _geohash(e, 3) == gh3),
             key=lambda e: e.magnitude,
             default=None,
         )
@@ -601,11 +562,3 @@ async def _foreshock_sequence(events: list[EarthquakeEvent], redis) -> list[Anom
         ))
 
     return anomalies
-
-
-def _gh3(event: EarthquakeEvent) -> str:
-    try:
-        return pygeohash.encode(event.latitude, event.longitude, precision=3)
-    except Exception:
-        return ""
-

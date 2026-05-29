@@ -68,20 +68,19 @@ def anomaly_row(event: AnomalyEvent) -> dict:
     return event.model_dump(mode="python")
 
 
-@retry(max_attempts=10, backoff_base=2.0, max_delay=30.0)
-async def write_earthquakes(client, events: list[EarthquakeEvent]) -> None:
-    rows = [earthquake_row(event) for event in events if event.has_position()]
+async def _insert(client, table: str, rows: list[dict]) -> None:
     if not rows:
         return
     columns = list(rows[0].keys())
-    await client.insert("earthquakes_raw", [[row[column] for column in columns] for row in rows], column_names=columns)
+    await client.insert(table, [[row[c] for c in columns] for row in rows], column_names=columns)
+
+
+@retry(max_attempts=10, backoff_base=2.0, max_delay=30.0)
+async def write_earthquakes(client, events: list[EarthquakeEvent]) -> None:
+    await _insert(client, "earthquakes_raw", [earthquake_row(e) for e in events if e.has_position()])
 
 
 @retry(max_attempts=10, backoff_base=2.0, max_delay=30.0)
 async def write_anomalies(client, events: list[AnomalyEvent]) -> None:
-    if not events:
-        return
-    rows = [anomaly_row(event) for event in events]
-    columns = list(rows[0].keys())
-    await client.insert("anomaly_events", [[row[column] for column in columns] for row in rows], column_names=columns)
+    await _insert(client, "anomaly_events", [anomaly_row(e) for e in events])
 

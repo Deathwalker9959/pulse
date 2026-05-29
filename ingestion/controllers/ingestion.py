@@ -4,11 +4,11 @@ import asyncio
 import logging
 import os
 
-import clickhouse_connect
 import httpx
 import redis.asyncio as aioredis
 
 from controllers.anomaly import detect_anomalies
+from db import get_clickhouse_client
 from models import AnomalyEvent, EarthquakeEvent
 from poller import POLL_INTERVAL, fetch_events
 from writer import write_anomalies, write_earthquakes
@@ -60,13 +60,7 @@ async def _publish_alerts(redis: aioredis.Redis, events: list[AnomalyEvent]) -> 
 
 async def run() -> None:
     redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=False)
-    clickhouse = await clickhouse_connect.get_async_client(
-        host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
-        port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
-        database=os.getenv("CLICKHOUSE_DB", "default"),
-        username=os.getenv("CLICKHOUSE_USER", "default"),
-        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
-    )
+    clickhouse = await get_clickhouse_client()
     http = httpx.AsyncClient(headers={"User-Agent": "PULSE earthquake assessment app"}, follow_redirects=True)
     logger.info("ingestion started; polling USGS every %ss", POLL_INTERVAL)
     try:
@@ -75,11 +69,24 @@ async def run() -> None:
                 fetched = await fetch_events(http)
                 events = await _new_or_revised(redis, fetched)
                 if events:
-                    await _publish_events(redis, events)
-                    await write_earthquakes(clickhouse, events)
-                    anomalies = await detect_anomalies(events, redis)
-                    await write_anomalies(clickhouse, anomalies)
-                    await _publish_alerts(redis, anomalies)
+                    earthquake_task = asyncio.gather(
+                        _publish_events(redis, events),
+                        write_earthquakes(clickhouse, events),
+                    )
+                    try:
+                        anomalies = await detect_anomalies(events, redis)
+                    except asyncio.CancelledError:
+                        earthquake_task.cancel()
+                        await asyncio.gather(earthquake_task, return_exceptions=True)
+                        raise
+                    except Exception:
+                        await asyncio.gather(earthquake_task, return_exceptions=True)
+                        raise
+                    await earthquake_task
+                    await asyncio.gather(
+                        write_anomalies(clickhouse, anomalies),
+                        _publish_alerts(redis, anomalies),
+                    )
                     logger.info("processed %d new/revised events and %d anomalies", len(events), len(anomalies))
                 else:
                     logger.info("USGS poll returned no new revisions")
