@@ -116,6 +116,92 @@ async def get_live(*, redis, from_ts: datetime | None = None, to_ts: datetime | 
     """, {"min_mag": min_magnitude} if min_magnitude > 0 else {})
 
 
+_IET_BINS: list[tuple[str, float, float]] = [
+    ("0–60s",   0,      60),
+    ("1–5 min", 60,     300),
+    ("5–30 min",300,    1_800),
+    ("30m–2h",  1_800,  7_200),
+    ("2–12h",   7_200,  43_200),
+    ("12h+",    43_200, float("inf")),
+]
+
+_BUCKET_INTERVAL = {
+    "1m": "1 MINUTE", "5m": "5 MINUTE", "15m": "15 MINUTE",
+    "1h": "1 HOUR",   "6h": "6 HOUR",   "1d":  "1 DAY",
+}
+
+
+def _bucket_expr(bucket: str) -> str:
+    if bucket == "1mo":
+        return "toStartOfMonth(time, 'UTC')"
+    if bucket == "1y":
+        return "toStartOfYear(time, 'UTC')"
+    interval = _BUCKET_INTERVAL.get(bucket, "1 DAY")
+    return f"toStartOfInterval(time, INTERVAL {interval}, 'UTC')"
+
+
+@cached(ttl=120, key_prefix="earthquakes:magfreq")
+async def get_magnitude_frequency(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    return await query("""
+        SELECT
+            round(toFloat64(magnitude), 1) AS mag_bin,
+            count() AS event_count
+        FROM earthquakes_raw FINAL
+        WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
+          AND magnitude >= 0
+        GROUP BY mag_bin
+        ORDER BY mag_bin ASC
+    """, {"t0": from_ts, "t1": to_ts})
+
+
+@cached(ttl=60, key_prefix="earthquakes:energy")
+async def get_energy_timeseries(*, redis, from_ts: datetime, to_ts: datetime, bucket: str = "1d") -> list[dict]:
+    expr = _bucket_expr(bucket)
+    return await query(f"""
+        SELECT
+            {expr} AS bucket,
+            sum(pow(10, toFloat64(magnitude) * 1.5 + 4.8)) AS energy_joules
+        FROM earthquakes_raw FINAL
+        WHERE time >= {{t0:DateTime}} AND time <= {{t1:DateTime}}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+    """, {"t0": from_ts, "t1": to_ts})
+
+
+@cached(ttl=120, key_prefix="earthquakes:bvalue")
+async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    return await query("""
+        SELECT
+            toStartOfDay(time) AS day,
+            1.0 / (log(10) * (avg(toFloat64(magnitude)) - 2.5)) AS b_value,
+            count() AS sample_size
+        FROM earthquakes_raw FINAL
+        WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
+          AND magnitude >= 2.5
+        GROUP BY day
+        HAVING sample_size >= 10
+        ORDER BY day ASC
+    """, {"t0": from_ts, "t1": to_ts})
+
+
+@cached(ttl=120, key_prefix="earthquakes:iet")
+async def get_inter_event_times(*, redis, from_ts: datetime, to_ts: datetime) -> list[dict]:
+    rows = await query("""
+        SELECT time FROM earthquakes_raw FINAL
+        WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
+        ORDER BY time ASC
+        LIMIT 50000
+    """, {"t0": from_ts, "t1": to_ts})
+    if len(rows) < 2:
+        return [{"bin_label": label, "count": 0} for label, *_ in _IET_BINS]
+    times = [r["time"] for r in rows]
+    iets = [(times[i] - times[i - 1]).total_seconds() for i in range(1, len(times))]
+    return [
+        {"bin_label": label, "count": sum(1 for t in iets if lo <= t < hi)}
+        for label, lo, hi in _IET_BINS
+    ]
+
+
 @cached(ttl=60, key_prefix="earthquakes:heatmap")
 async def get_heatmap(*, redis, from_ts: datetime, to_ts: datetime, resolution: int = 3) -> list[dict]:
     return await query("""

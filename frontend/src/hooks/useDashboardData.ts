@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AnomalyEvent, type BucketSize, type EarthquakeEvent, type RangePreset, websocketUrl } from "../api/client";
+import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../api/client";
 
 const MAX_EVENTS = 500;
 
@@ -73,6 +74,31 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
   const depthBands = useQuery({ queryKey: ["earthquakes", "depth-bands", from, to], queryFn: () => api.depthBands(from, to) });
   const rollups = useQuery({ queryKey: ["earthquakes", "rollups", from, to, net, rollupBucket], queryFn: () => api.networkRollups(from, to, net, rollupBucket) });
 
+  const magnitudeFrequency = useQuery<MagFrequencyBucket[]>({
+    queryKey: ["earthquakes", "magnitude-frequency", from, to],
+    queryFn: () => api.magnitudeFrequency(from!, to!),
+    enabled: !!from && !!to,
+    staleTime: 120_000,
+  });
+  const energyTimeseries = useQuery<EnergyBucket[]>({
+    queryKey: ["earthquakes", "energy-timeseries", from, to, bucket],
+    queryFn: () => api.energyTimeseries(from!, to!, bucket),
+    enabled: !!from && !!to,
+    staleTime: 60_000,
+  });
+  const bValueHistory = useQuery<BValueBucket[]>({
+    queryKey: ["earthquakes", "b-value-history", from, to],
+    queryFn: () => api.bValueHistory(from!, to!),
+    enabled: !!from && !!to,
+    staleTime: 120_000,
+  });
+  const interEventTimes = useQuery<IETBucket[]>({
+    queryKey: ["earthquakes", "inter-event-times", from, to],
+    queryFn: () => api.interEventTimes(from!, to!),
+    enabled: !!from && !!to,
+    staleTime: 120_000,
+  });
+
   useEffect(() => {
     const socket = new WebSocket(websocketUrl("/ws/events"));
     socket.onopen = () => setEventsConnected(true);
@@ -123,6 +149,10 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     magnitudeBands,
     depthBands,
     rollups,
+    magnitudeFrequency,
+    energyTimeseries,
+    bValueHistory,
+    interEventTimes,
     eventsConnected,
     alertsConnected
   };

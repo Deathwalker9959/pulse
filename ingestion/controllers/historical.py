@@ -65,7 +65,14 @@ async def fetch_month(http: httpx.AsyncClient, t0: date, t1: date) -> list[Earth
     return [EarthquakeEvent.from_geojson_feature(f) for f in features if f.get("id")]
 
 
+RETENTION_DAYS = 400  # must match earthquakes_raw TTL
+
+
 async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetime) -> int:
+    retention_cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    effective_start = max(start, retention_cutoff)
+    if effective_start >= end:
+        return 0
     result = await clickhouse.query(
         """
         SELECT event_id, time, updated, latitude, longitude, depth_km, magnitude, mag_type, place,
@@ -74,7 +81,7 @@ async def backfill_anomalies_for_range(clickhouse, start: datetime, end: datetim
         WHERE time >= {start:DateTime} AND time <= {end:DateTime}
         ORDER BY time ASC
         """,
-        parameters={"start": start, "end": end},
+        parameters={"start": effective_start, "end": end},
     )
     events = [EarthquakeEvent(**row) for row in result.named_results()]
     if not events:

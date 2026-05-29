@@ -10,7 +10,16 @@ from fastapi.responses import StreamingResponse
 
 from cache import get_redis
 from controllers.alerts import get_anomaly_history
-from controllers.earthquakes import get_heatmap, get_live, render_events_atlas, render_heatmap_atlas
+from controllers.earthquakes import (
+    get_b_value_history,
+    get_energy_timeseries,
+    get_heatmap,
+    get_inter_event_times,
+    get_live,
+    get_magnitude_frequency,
+    render_events_atlas,
+    render_heatmap_atlas,
+)
 from controllers.stats import (
     RANGE_PRESETS,
     VALID_BUCKETS,
@@ -180,6 +189,52 @@ async def network_rollups(
     if bucket not in VALID_BUCKETS:
         raise HTTPException(status_code=422, detail=f"bucket must be one of {sorted(VALID_BUCKETS)}")
     return await get_network_rollups(redis=redis, bucket=bucket, from_ts=from_ts, to_ts=to_ts, net=net, limit=limit)
+
+
+@earthquake_router.get("/magnitude-frequency")
+async def magnitude_frequency(
+    from_ts: Annotated[datetime, Query(alias="from")],
+    to_ts: Annotated[datetime, Query(alias="to")],
+    redis=Depends(get_redis),
+) -> list[dict]:
+    return await get_magnitude_frequency(redis=redis, from_ts=from_ts, to_ts=to_ts)
+
+
+@earthquake_router.get("/energy-timeseries")
+async def energy_timeseries(
+    from_ts: Annotated[datetime, Query(alias="from")],
+    to_ts: Annotated[datetime, Query(alias="to")],
+    bucket: str = "1d",
+    redis=Depends(get_redis),
+) -> list[dict]:
+    if bucket not in VALID_BUCKETS:
+        raise HTTPException(status_code=422, detail=f"bucket must be one of {sorted(VALID_BUCKETS)}")
+    return await get_energy_timeseries(redis=redis, from_ts=from_ts, to_ts=to_ts, bucket=bucket)
+
+
+@earthquake_router.get("/b-value-history")
+async def b_value_history(
+    from_ts: Annotated[datetime | None, Query(alias="from")] = None,
+    to_ts: Annotated[datetime | None, Query(alias="to")] = None,
+    range_preset: Annotated[str | None, Query(alias="range")] = None,
+    redis=Depends(get_redis),
+) -> list[dict]:
+    if range_preset is not None:
+        if range_preset not in RANGE_PRESETS:
+            raise HTTPException(status_code=422, detail=f"range must be one of {sorted(RANGE_PRESETS)}")
+        from_ts, to_ts, _ = resolve_range(range_preset)
+    if not from_ts or not to_ts:
+        from_ts, to_ts, _ = resolve_range("30d")
+    return await get_b_value_history(redis=redis, from_ts=from_ts, to_ts=to_ts)
+
+
+@earthquake_router.get("/inter-event-times")
+async def inter_event_times(
+    from_ts: Annotated[datetime, Query(alias="from")],
+    to_ts: Annotated[datetime, Query(alias="to")],
+    redis=Depends(get_redis),
+) -> list[dict]:
+    return await get_inter_event_times(redis=redis, from_ts=from_ts, to_ts=to_ts)
 
 
 @anomaly_router.get("/history")

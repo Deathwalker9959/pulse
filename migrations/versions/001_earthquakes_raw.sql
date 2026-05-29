@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS earthquakes_raw
 (
-    event_id     LowCardinality(String),
+    event_id     String,
     time         DateTime,
     updated      DateTime,
     latitude     Float64,
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS earthquakes_raw
     ingested_at  DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(updated)
-PARTITION BY toYYYYMMDD(time)
-ORDER BY (event_id, time)
+PARTITION BY toYYYYMM(time)
+ORDER BY (time, event_id)
 TTL time + INTERVAL 7 DAY TO VOLUME 'cold', time + INTERVAL 400 DAY DELETE
 SETTINGS storage_policy = 'hot_cold', index_granularity = 8192;
 

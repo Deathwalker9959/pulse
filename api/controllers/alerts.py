@@ -20,40 +20,31 @@ _OUTER_SELECT = """
 """
 
 _DEDUP_SELECT = """
-    argMax(anomaly_id, detected_at) AS selected_anomaly_id,
-    max(detected_at) AS selected_detected_at,
-    argMax(event_time, detected_at) AS selected_event_time,
-    anomaly_type AS selected_anomaly_type,
-    argMax(severity, detected_at) AS selected_severity,
-    source_event_id AS selected_source_event_id,
+    argMax(anomaly_id, detected_at)   AS selected_anomaly_id,
+    max(detected_at)                  AS selected_detected_at,
+    argMax(event_time, detected_at)   AS selected_event_time,
+    anomaly_type                      AS selected_anomaly_type,
+    argMax(severity, detected_at)     AS selected_severity,
+    source_event_id                   AS selected_source_event_id,
     argMax(source_place, detected_at) AS selected_source_place,
-    argMax(latitude, detected_at) AS selected_latitude,
-    argMax(longitude, detected_at) AS selected_longitude,
-    argMax(detail, detected_at) AS selected_detail,
-    max(if(event_time > toDateTime(0), event_time, detected_at)) AS selected_sort_time
+    argMax(latitude, detected_at)     AS selected_latitude,
+    argMax(longitude, detected_at)    AS selected_longitude,
+    argMax(detail, detected_at)       AS selected_detail,
+    max(event_time)                   AS selected_sort_time
 """
 
 _RANGE_DEDUP_SELECT = """
-    argMax(ae.anomaly_id, ae.detected_at) AS selected_anomaly_id,
-    max(ae.detected_at) AS selected_detected_at,
-    argMax(if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time), ae.detected_at) AS selected_event_time,
-    ae.anomaly_type AS selected_anomaly_type,
-    argMax(ae.severity, ae.detected_at) AS selected_severity,
-    ae.source_event_id AS selected_source_event_id,
+    argMax(ae.anomaly_id, ae.detected_at)   AS selected_anomaly_id,
+    max(ae.detected_at)                     AS selected_detected_at,
+    argMax(ae.event_time, ae.detected_at)   AS selected_event_time,
+    ae.anomaly_type                         AS selected_anomaly_type,
+    argMax(ae.severity, ae.detected_at)     AS selected_severity,
+    ae.source_event_id                      AS selected_source_event_id,
     argMax(ae.source_place, ae.detected_at) AS selected_source_place,
-    argMax(ae.latitude, ae.detected_at) AS selected_latitude,
-    argMax(ae.longitude, ae.detected_at) AS selected_longitude,
-    argMax(ae.detail, ae.detected_at) AS selected_detail,
-    max(if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time)) AS selected_sort_time
-"""
-
-_RANGE_JOIN = """
-    anomaly_events AS ae
-    LEFT JOIN (
-        SELECT event_id, argMax(time, ingested_at) AS source_event_time
-        FROM earthquakes_raw
-        GROUP BY event_id
-    ) AS er ON ae.source_event_id = er.event_id
+    argMax(ae.latitude, ae.detected_at)     AS selected_latitude,
+    argMax(ae.longitude, ae.detected_at)    AS selected_longitude,
+    argMax(ae.detail, ae.detected_at)       AS selected_detail,
+    max(ae.event_time)                      AS selected_sort_time
 """
 
 
@@ -66,9 +57,8 @@ async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = N
             SELECT {_OUTER_SELECT}
             FROM (
                 SELECT {_RANGE_DEDUP_SELECT}
-                FROM {_RANGE_JOIN}
-                WHERE if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time) > toDateTime(0)
-                  AND if(ae.event_time > toDateTime(0), ae.event_time, er.source_event_time) BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+                FROM anomaly_events AS ae
+                WHERE ae.event_time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
                 GROUP BY ae.source_event_id, ae.anomaly_type
             )
             ORDER BY selected_sort_time DESC

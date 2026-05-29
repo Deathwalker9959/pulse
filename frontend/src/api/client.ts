@@ -65,6 +65,27 @@ export interface HeatmapCell {
   centroid_lon: number;
 }
 
+export interface MagFrequencyBucket {
+  mag_bin: number;
+  event_count: number;
+}
+
+export interface EnergyBucket {
+  bucket: string;
+  energy_joules: number;
+}
+
+export interface BValueBucket {
+  day: string;
+  b_value: number;
+  sample_size: number;
+}
+
+export interface IETBucket {
+  bin_label: string;
+  count: number;
+}
+
 export interface IngestionStatus {
   has_live_data: boolean;
   last_ingested_at: string | null;
@@ -105,7 +126,15 @@ export const api = {
   networkRollups: (from?: string, to?: string, net?: string, bucket: BucketSize = "5m") =>
     get<NetworkRollup[]>("/api/earthquakes/rollups/network", { bucket, from, to, net, limit: "500" }),
   anomalyHistory: (from?: string, to?: string) => get<AnomalyEvent[]>("/api/anomalies/history", { from, to, limit: "10000" }),
-  ingestionStatus: () => get<IngestionStatus>("/api/ingestion/status")
+  ingestionStatus: () => get<IngestionStatus>("/api/ingestion/status"),
+  magnitudeFrequency: (from: string, to: string) =>
+    get<MagFrequencyBucket[]>("/api/earthquakes/magnitude-frequency", { from, to }),
+  energyTimeseries: (from: string, to: string, bucket: BucketSize = "1d") =>
+    get<EnergyBucket[]>("/api/earthquakes/energy-timeseries", { from, to, bucket }),
+  bValueHistory: (from: string, to: string) =>
+    get<BValueBucket[]>("/api/earthquakes/b-value-history", { from, to }),
+  interEventTimes: (from: string, to: string) =>
+    get<IETBucket[]>("/api/earthquakes/inter-event-times", { from, to })
 };
 
 export function websocketUrl(path: string): string {

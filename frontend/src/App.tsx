@@ -27,6 +27,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -39,7 +40,7 @@ import type { EarthquakeEvent } from "./api/client";
 import { useDashboardData, resolveRange } from "./hooks/useDashboardData";
 import { MapLibreView } from "./components/MapLibreView";
 import { RangePickerButton } from "./components/RangePickerButton";
-import type { AnomalyEvent, BandBucket, BucketSize, HeatmapCell, RangePreset, TopItem } from "./api/client";
+import type { AnomalyEvent, BandBucket, BucketSize, BValueBucket, EnergyBucket, HeatmapCell, IETBucket, MagFrequencyBucket, RangePreset, TopItem } from "./api/client";
 
 const PRESET_LABELS: { label: string; value: RangePreset }[] = [
   { label: "1H",  value: "1h"  },
@@ -282,6 +283,132 @@ function autoBucket(from: string, to: string): BucketSize {
   return "1y";
 }
 
+const MC = 2.5; // magnitude of completeness (matches B_VALUE_MC in anomaly detector)
+
+function SeismicAnalysis({
+  magnitudeFrequency,
+  energyTimeseries,
+  bValueHistory,
+  interEventTimes,
+  xLabel,
+}: {
+  magnitudeFrequency: MagFrequencyBucket[];
+  energyTimeseries: EnergyBucket[];
+  bValueHistory: BValueBucket[];
+  interEventTimes: IETBucket[];
+  xLabel: (iso: string) => string;
+}) {
+  const grPoints = useMemo(() => {
+    const sorted = [...magnitudeFrequency].sort((a, b) => a.mag_bin - b.mag_bin);
+    let cumN = sorted.reduce((s, b) => s + b.event_count, 0);
+    return sorted
+      .filter(() => cumN > 0)
+      .map(b => {
+        const point = { mag: b.mag_bin, logCumN: cumN > 0 ? Math.log10(cumN) : 0 };
+        cumN -= b.event_count;
+        return point;
+      });
+  }, [magnitudeFrequency]);
+
+  const grBValue = useMemo(() => {
+    const above = magnitudeFrequency.filter(b => b.mag_bin >= MC);
+    const total = above.reduce((s, b) => s + b.event_count, 0);
+    if (total < 20) return null;
+    const meanM = above.reduce((s, b) => s + b.mag_bin * b.event_count, 0) / total;
+    if (meanM <= MC) return null;
+    return Math.LOG10E / (meanM - MC);
+  }, [magnitudeFrequency]);
+
+  const energyData = useMemo(() =>
+    energyTimeseries
+      .filter(d => d.energy_joules > 0)
+      .map(d => ({ bucket: d.bucket, logEnergy: Math.log10(d.energy_joules) })),
+    [energyTimeseries]
+  );
+
+  return (
+    <Box>
+      <Typography variant="h6" sx={{ mb: 2 }}>Seismic Analysis</Typography>
+      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(2, 1fr)" }, gap: 2 }}>
+        <Card variant="outlined">
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              G–R Distribution{grBValue !== null ? ` · b = ${grBValue.toFixed(2)}` : ""}
+            </Typography>
+            <Box sx={{ height: 260 }}>
+              <ResponsiveContainer>
+                <LineChart data={grPoints}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="mag" label={{ value: "Magnitude", position: "insideBottom", offset: -2, fontSize: 11 }} />
+                  <YAxis label={{ value: "log₁₀(N≥M)", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip formatter={(v) => [Number(v).toFixed(2), "log₁₀(N≥M)"]} />
+                  <Line type="monotone" dataKey="logCumN" stroke="#7c3aed" dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </Box>
+          </CardContent>
+        </Card>
+        <Card variant="outlined">
+          <CardContent>
+            <Typography variant="h6" gutterBottom>B-Value History</Typography>
+            <Box sx={{ height: 260 }}>
+              <ResponsiveContainer>
+                <LineChart data={bValueHistory}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" tickFormatter={d => new Date(d).toLocaleDateString([], { month: "short", day: "numeric" })} />
+                  <YAxis domain={[0, 2.5]} allowDecimals />
+                  <Tooltip
+                    labelFormatter={d => new Date(String(d)).toLocaleDateString()}
+                    formatter={(v) => [Number(v).toFixed(2), "b-value"]}
+                  />
+                  <ReferenceLine y={0.5} stroke="#dc2626" strokeDasharray="4 2" label={{ value: "Critical (0.5)", position: "insideTopRight", fontSize: 10 }} />
+                  <ReferenceLine y={0.7} stroke="#f97316" strokeDasharray="4 2" label={{ value: "Warning (0.7)", position: "insideTopRight", fontSize: 10 }} />
+                  <Line type="monotone" dataKey="b_value" stroke="#0284c7" dot={false} name="b-value" />
+                </LineChart>
+              </ResponsiveContainer>
+            </Box>
+          </CardContent>
+        </Card>
+        <Card variant="outlined">
+          <CardContent>
+            <Typography variant="h6" gutterBottom>Seismic Energy Release</Typography>
+            <Box sx={{ height: 260 }}>
+              <ResponsiveContainer>
+                <AreaChart data={energyData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="bucket" tickFormatter={xLabel} />
+                  <YAxis label={{ value: "log₁₀(E) J", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip
+                    labelFormatter={d => xLabel(String(d))}
+                    formatter={(v) => [`10^${Number(v).toFixed(1)} J`, "Energy"]}
+                  />
+                  <Area dataKey="logEnergy" stroke="#b45309" fill="#fbbf24" fillOpacity={0.35} name="log₁₀(E)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Box>
+          </CardContent>
+        </Card>
+        <Card variant="outlined">
+          <CardContent>
+            <Typography variant="h6" gutterBottom>Inter-Event Time Distribution</Typography>
+            <Box sx={{ height: 260 }}>
+              <ResponsiveContainer>
+                <BarChart data={interEventTimes}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="bin_label" tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="#176b87" name="Events" />
+                </BarChart>
+              </ResponsiveContainer>
+            </Box>
+          </CardContent>
+        </Card>
+      </Box>
+    </Box>
+  );
+}
+
 export default function App() {
   const [activeRange, setActiveRange] = useState<RangePreset | null>("24h");
   const [from, setFrom] = useState(() => resolveRange("24h").from);
@@ -515,6 +642,14 @@ export default function App() {
           <BandsChart title="Magnitude Bands" data={data.magnitudeBands.data ?? []} field="mag_band" />
           <BandsChart title="Depth Bands" data={data.depthBands.data ?? []} field="depth_band" />
         </Box>
+
+        <SeismicAnalysis
+          magnitudeFrequency={data.magnitudeFrequency.data ?? []}
+          energyTimeseries={data.energyTimeseries.data ?? []}
+          bValueHistory={data.bValueHistory.data ?? []}
+          interEventTimes={data.interEventTimes.data ?? []}
+          xLabel={xLabel}
+        />
       </Stack>
     </Container>
   );

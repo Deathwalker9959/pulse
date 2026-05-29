@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS anomaly_events
 )
 ENGINE = ReplacingMergeTree(detected_at)
 PARTITION BY toYYYYMMDD(detected_at)
-ORDER BY (anomaly_id, detected_at)
+ORDER BY anomaly_id
 TTL detected_at + INTERVAL 30 DAY DELETE
 SETTINGS storage_policy = 'hot_cold';
 

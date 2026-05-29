@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-
 from pydantic import BaseModel
 
 
@@ -28,6 +27,7 @@ class EarthquakeEvent(BaseModel):
 class AnomalyEvent(BaseModel):
     anomaly_id: str
     detected_at: datetime
+    event_time: datetime
     anomaly_type: str
     severity: str
     source_event_id: str
