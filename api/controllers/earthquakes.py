@@ -61,6 +61,7 @@ async def get_magnitude_frequency(*, redis, from_ts: datetime, to_ts: datetime) 
           AND magnitude >= 0
         GROUP BY mag_bin
         ORDER BY mag_bin ASC
+        LIMIT 200
     """, {"t0": from_ts, "t1": to_ts})
 
 
@@ -76,6 +77,7 @@ async def get_energy_timeseries(*, redis, from_ts: datetime, to_ts: datetime, bu
         WHERE time >= {{t0:DateTime}} AND time <= {{t1:DateTime}}
         GROUP BY bucket
         ORDER BY bucket ASC
+        LIMIT 1500
     """, {"t0": from_ts, "t1": to_ts})
 
 
@@ -93,6 +95,7 @@ async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime) -> l
         GROUP BY day
         HAVING sample_size >= 10
         ORDER BY day ASC
+        LIMIT 500
     """, {"t0": from_ts, "t1": to_ts})
 
 
@@ -117,18 +120,28 @@ async def get_inter_event_times(*, redis, from_ts: datetime, to_ts: datetime) ->
 
 @cached(ttl=60, key_prefix="earthquakes:heatmap")
 async def get_heatmap(*, redis, from_ts: datetime, to_ts: datetime, resolution: int = 3) -> list[dict]:
-    """Per-H3-cell event count and magnitude stats for the window, for the map heatmap layer."""
-    return await query("""
+    """Per-H3-cell event count and magnitude stats for the window, for the map heatmap layer.
+
+    Resolutions 2 and 3 use pre-computed MATERIALIZED columns (h3r2/h3r3) — no per-row
+    function evaluation. Other resolutions fall back to geoToH3() at query time.
+    """
+    if resolution == 3:
+        h3_expr = "h3r3"
+    elif resolution == 2:
+        h3_expr = "h3r2"
+    else:
+        h3_expr = f"lower(hex(geoToH3(longitude, latitude, {resolution})))"
+    return await query(f"""
         SELECT
-            lower(hex(geoToH3(longitude, latitude, {resolution:UInt8}))) AS h3_index,
+            {h3_expr} AS h3_index,
             count() AS event_count,
             max(magnitude) AS max_magnitude,
             avg(magnitude) AS avg_magnitude,
             avg(latitude) AS centroid_lat,
             avg(longitude) AS centroid_lon
         FROM earthquakes_raw FINAL
-        WHERE time >= {t0:DateTime} AND time <= {t1:DateTime}
+        WHERE time >= {{t0:DateTime}} AND time <= {{t1:DateTime}}
         GROUP BY h3_index
         ORDER BY event_count DESC
         LIMIT 10000
-    """, {"t0": from_ts, "t1": to_ts, "resolution": resolution})
+    """, {"t0": from_ts, "t1": to_ts})

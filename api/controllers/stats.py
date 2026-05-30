@@ -83,31 +83,32 @@ def _bucket_expr(bucket: str, column: str = "time") -> str:
 async def get_top_n(*, redis, field: Literal["net", "place"], limit: int, from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
     """Top-N networks or places by distinct-event count within the window, descending.
 
-    `net` is served by the hourly rollup (whole hours) + raw edges; `place` has no
-    rollup and reads earthquakes_raw directly.
+    Both `net` and `place` are served by their respective hourly rollup MVs for whole
+    hours, with earthquakes_raw FINAL only for partial edge hours.
     """
     t0, t1 = _window(from_ts, to_ts)
     column = "net" if field == "net" else "place"
-    split = _aligned_split(t0, t1, 3600) if field == "net" else None
+    mv_table = "earthquakes_hourly_mv_data" if field == "net" else "earthquakes_hourly_places_mv_data"
+    split = _aligned_split(t0, t1, 3600)
     if split is not None:
         lo, hi = split
-        return await query("""
+        return await query(f"""
             SELECT label, sum(c) AS count FROM (
-                SELECT net AS label, uniqExactMerge(event_count_state) AS c
-                FROM earthquakes_hourly_mv_data
-                WHERE hour >= {lo:DateTime} AND hour < {hi:DateTime} AND net != ''
-                GROUP BY net
+                SELECT {column} AS label, uniqExactMerge(event_count_state) AS c
+                FROM {mv_table}
+                WHERE hour >= {{lo:DateTime}} AND hour < {{hi:DateTime}} AND {column} != ''
+                GROUP BY {column}
                 UNION ALL
-                SELECT net AS label, count() AS c
+                SELECT {column} AS label, count() AS c
                 FROM earthquakes_raw FINAL
-                WHERE ((time >= {t0:DateTime} AND time < {lo:DateTime})
-                    OR (time >= {hi:DateTime} AND time <= {t1:DateTime}))
-                  AND net != ''
-                GROUP BY net
+                WHERE ((time >= {{t0:DateTime}} AND time < {{lo:DateTime}})
+                    OR (time >= {{hi:DateTime}} AND time <= {{t1:DateTime}}))
+                  AND {column} != ''
+                GROUP BY {column}
             )
             GROUP BY label
             ORDER BY count DESC
-            LIMIT {limit:UInt32}
+            LIMIT {{limit:UInt32}}
         """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi, "limit": limit})
     return await query(f"""
         SELECT {column} AS label, count() AS count
@@ -262,6 +263,7 @@ async def get_density(*, redis, bbox: str, interval: Literal["1h", "6h", "24h"])
     """, {"hours": hours, "lon_min": lon_min, "lon_max": lon_max, "lat_min": lat_min, "lat_max": lat_max})
 
 
+@cached(ttl=30, key_prefix="stats:rollups:network")
 async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, to_ts: datetime | None, net: str, limit: int) -> list[dict]:
     """Per-bucket, per-network distinct count and average magnitude/depth; optional single-network filter.
 
@@ -334,7 +336,9 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
 
 async def get_ingestion_status() -> dict:
     """Pipeline health snapshot: data freshness, recent event/anomaly counts, and poll interval."""
-    rows, anomaly_rows, type_rows = await asyncio.gather(
+    from cache import get_redis
+    redis = get_redis()
+    rows, anomaly_rows, type_rows, last_poll_raw = await asyncio.gather(
         query("""
             SELECT
                 max(ingested_at) AS last_ingested_at,
@@ -356,6 +360,7 @@ async def get_ingestion_status() -> dict:
             FROM anomaly_events
             WHERE event_time >= now() - INTERVAL 1 HOUR
         """),
+        redis.get("pulse:last-poll-at"),
     )
     row = rows[0] if rows else {}
     last_at = row.get("last_ingested_at")
@@ -363,11 +368,22 @@ async def get_ingestion_status() -> dict:
     if last_at:
         aware = last_at if last_at.tzinfo else last_at.replace(tzinfo=timezone.utc)
         age_seconds = int((datetime.now(timezone.utc) - aware).total_seconds())
+    poll_age_seconds = None
+    last_poll_at_str = last_poll_raw if isinstance(last_poll_raw, str) else (last_poll_raw.decode() if last_poll_raw else None)
+    if last_poll_at_str:
+        try:
+            poll_dt = datetime.fromisoformat(last_poll_at_str)
+            aware_poll = poll_dt if poll_dt.tzinfo else poll_dt.replace(tzinfo=timezone.utc)
+            poll_age_seconds = int((datetime.now(timezone.utc) - aware_poll).total_seconds())
+        except ValueError:
+            pass
     events_2min = row.get("events_2min", 0)
     return {
         "has_live_data": events_2min > 0,
         "last_ingested_at": last_at.isoformat() if last_at else None,
         "data_age_seconds": age_seconds,
+        "last_poll_at": last_poll_at_str,
+        "poll_age_seconds": poll_age_seconds,
         "events_30min": row.get("events_30min", 0),
         "events_2min": events_2min,
         "anomaly_24h": anomaly_rows[0]["anomaly_24h"] if anomaly_rows else 0,
