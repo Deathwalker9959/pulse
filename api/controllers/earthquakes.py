@@ -110,6 +110,7 @@ async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime, buck
             LIMIT 500
         """, {"t0": from_ts, "t1": to_ts})
 
+    min_samples = 5 if (plate or net) else 10
     expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
@@ -120,7 +121,7 @@ async def get_b_value_history(*, redis, from_ts: datetime, to_ts: datetime, buck
         WHERE time >= {{t0:DateTime}} AND time <= {{t1:DateTime}}
           AND magnitude >= 2.5 {plate_clause} {net_clause}
         GROUP BY day
-        HAVING sample_size >= 10
+        HAVING sample_size >= {min_samples}
         ORDER BY day ASC
         LIMIT 500
     """, {"t0": from_ts, "t1": to_ts, "plate": plate, "net": net})

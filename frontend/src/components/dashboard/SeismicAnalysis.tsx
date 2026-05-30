@@ -1,4 +1,4 @@
-import { Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
+import { Alert, Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -95,6 +95,11 @@ export function SeismicAnalysis({
                 <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
               </MuiTooltip>
             </Stack>
+            {bValueHistory.length > 0 && bValueHistory.length < 10 && (
+              <Alert severity="warning" sx={{ mb: 1, py: 0, fontSize: 12 }}>
+                Sparse data — only {bValueHistory.length} qualifying day{bValueHistory.length !== 1 ? "s" : ""}. B-values unreliable (Mc may not match filter subset).
+              </Alert>
+            )}
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <LineChart data={bValueHistory}>

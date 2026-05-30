@@ -32,7 +32,7 @@ export const apiService = {
   depthBands: (from?: string, to?: string, plate?: string, net?: string) =>
     get<BandBucket[]>("/api/earthquakes/depth-bands", { from, to, plate, net }),
   networkRollups: (from?: string, to?: string, net?: string, bucket: BucketSize = "5m", plate?: string) =>
-    get<NetworkRollup[]>("/api/earthquakes/rollups/network", { bucket, from, to, net, limit: "500", plate }),
+    get<NetworkRollup[]>("/api/earthquakes/rollups/network", { bucket, from, to, net, limit: "5000", plate }),
   anomalyHistory: (from?: string, to?: string, plate?: string, net?: string) => get<AnomalyEvent[]>("/api/anomalies/history", { from, to, limit: "10000", plate, net }),
   ingestionStatus: () => get<IngestionStatus>("/api/ingestion/status"),
   magnitudeFrequency: (from: string, to: string, plate?: string, net?: string) =>
