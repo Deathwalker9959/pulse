@@ -1,6 +1,8 @@
 import { Container, Stack } from "@mui/material";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { AnomalyEvent, BucketSize, EarthquakeEvent, HeatmapCell, RangePreset } from "./api/client";
+import { apiService } from "./api/service";
 import {
   ActivityCharts,
   DashboardFilters,
@@ -10,7 +12,8 @@ import {
   SeismicAnalysis,
   TopSummaryGrid,
 } from "./components/dashboard";
-import { resolveRange, useDashboardData } from "./hooks/useDashboardData";
+import { useDashboardData } from "./hooks/useDashboardData";
+import { useFilters } from "./hooks/useFilters";
 import { utcDateLabel, utcMonthYearLabel, utcTimeLabel, utcYearLabel } from "./utils/dates";
 
 function autoBucket(from: string, to: string): BucketSize {
@@ -25,16 +28,20 @@ function autoBucket(from: string, to: string): BucketSize {
 }
 
 export default function App() {
-  const [activeRange, setActiveRange] = useState<RangePreset | null>("24h");
-  const [from, setFrom] = useState(() => resolveRange("24h").from);
-  const [to, setTo] = useState(() => resolveRange("24h").to);
-  const [net, setNet] = useState("");
   const [mapView, setMapView] = useState<"globe" | "map">("globe");
-  const [activeLayers, setActiveLayers] = useState<string[]>(["event-hexes", "event-nodes"]);
+  const [activeLayers, setActiveLayers] = useState<string[]>(["event-hexes", "event-nodes", "signal-nodes"]);
   const [selectedEvent, setSelectedEvent] = useState<EarthquakeEvent | null>(null);
   const [focusLatLon, setFocusLatLon] = useState<{ lat: number; lon: number } | null>(null);
   const [viewCenter, setViewCenter] = useState<{ lat: number; lon: number }>({ lat: 20, lon: 0 });
   const [alertTypeFilter, setAlertTypeFilter] = useState("");
+
+  function clearMapFocus() {
+    setSelectedEvent(null);
+    setFocusLatLon(null);
+  }
+
+  const { activeRange, from, to, net, plate, onPresetClick, onPickerChange, onNetChange, onPlateChange, clearFilters } =
+    useFilters(clearMapFocus);
 
   function handleTabChange(_: unknown, value: "globe" | "map") {
     setMapView(value);
@@ -44,31 +51,6 @@ export default function App() {
     setActiveLayers(value);
   }
 
-  function clearMapFocus() {
-    setSelectedEvent(null);
-    setFocusLatLon(null);
-  }
-
-  function onPresetClick(preset: RangePreset) {
-    const range = resolveRange(preset);
-    setFrom(range.from);
-    setTo(range.to);
-    setActiveRange(preset);
-    clearMapFocus();
-  }
-
-  function onPickerChange(newFrom: string, newTo: string) {
-    setFrom(newFrom);
-    setTo(newTo);
-    setActiveRange(null);
-    clearMapFocus();
-  }
-
-  function clearFilters() {
-    setNet("");
-    onPresetClick("24h");
-  }
-
   const bucket = useMemo(() => autoBucket(from, to), [from, to]);
   const rollupBucket: BucketSize = useMemo(() => {
     if (bucket === "1y" || bucket === "1mo" || bucket === "1d") return "1d";
@@ -76,7 +58,8 @@ export default function App() {
     return "5m";
   }, [bucket]);
 
-  const data = useDashboardData(from, to, net, bucket, rollupBucket);
+  const platesQuery = useQuery({ queryKey: ["earthquakes", "plates"], queryFn: () => apiService.plates(), staleTime: Infinity });
+  const data = useDashboardData(from, to, net, bucket, rollupBucket, plate);
   const events = data.live.data ?? [];
   const heatmapCells: HeatmapCell[] = data.heatmap.data ?? [];
   const isHeatmapMode = data.isHeatmapMode;
@@ -126,10 +109,13 @@ export default function App() {
           from={from}
           to={to}
           net={net}
+          plate={plate}
           networks={data.networks.data ?? []}
+          plates={platesQuery.data ?? []}
           onPresetClick={onPresetClick}
           onPickerChange={onPickerChange}
-          onNetChange={setNet}
+          onNetChange={onNetChange}
+          onPlateChange={onPlateChange}
           onClear={clearFilters}
         />
 

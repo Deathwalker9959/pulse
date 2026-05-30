@@ -40,7 +40,7 @@ export function resolveRange(preset: RangePreset): ResolvedRange {
   return { from, to, bucket: config.bucket, rollupBucket: config.rollupBucket };
 }
 
-export function useDashboardData(from?: string, to?: string, net?: string, bucket: BucketSize = "1h", rollupBucket: BucketSize = "5m") {
+export function useDashboardData(from?: string, to?: string, net?: string, bucket: BucketSize = "1h", rollupBucket: BucketSize = "5m", plate?: string) {
   const queryClient = useQueryClient();
   const invalidateTimer = useRef<number | undefined>(undefined);
 
@@ -52,57 +52,59 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
   const isHeatmapMode = spanDays > 6;
   const heatmapResolution = spanDays > 180 ? 2 : 3;
   const minMagnitude = !isHeatmapMode && spanDays > 3 ? "2.5" : undefined;
+  const bValueBucket: "1h" | "1d" = spanDays <= 1 ? "1h" : "1d";
 
   const heatmap = useQuery({
-    queryKey: ["earthquakes", "heatmap", from, to, heatmapResolution],
-    queryFn: () => apiService.heatmap(from!, to!, heatmapResolution),
+    queryKey: ["earthquakes", "heatmap", from, to, heatmapResolution, plate, net],
+    queryFn: () => apiService.heatmap(from!, to!, heatmapResolution, plate, net),
     enabled: isHeatmapMode && !!from && !!to,
     staleTime: 60_000,
   });
 
   const live = useQuery({
-    queryKey: ["earthquakes", "live", from, to, minMagnitude],
-    queryFn: () => apiService.live(from, to, minMagnitude),
+    queryKey: ["earthquakes", "live", from, to, minMagnitude, plate, net],
+    queryFn: () => apiService.live(from, to, minMagnitude, plate, net),
     enabled: !isHeatmapMode,
     staleTime: from || to ? 30_000 : Infinity,
   });
-  const alerts = useQuery({ queryKey: ["anomalies", "history", from, to], queryFn: () => apiService.anomalyHistory(from, to), staleTime: 0 });
+  const alerts = useQuery({ queryKey: ["anomalies", "history", from, to, plate, net], queryFn: () => apiService.anomalyHistory(from, to, plate, net), staleTime: 0 });
   const status = useQuery({ queryKey: ["ingestion", "status"], queryFn: apiService.ingestionStatus, refetchInterval: 30_000 });
-  const timeseries = useQuery({ queryKey: ["earthquakes", "timeseries", from, to, bucket], queryFn: () => apiService.timeseries(from, to, bucket) });
-  const networks = useQuery({ queryKey: ["earthquakes", "top-networks", from, to], queryFn: () => apiService.topNetworks(from, to) });
-  const places = useQuery({ queryKey: ["earthquakes", "top-places", from, to], queryFn: () => apiService.topPlaces(from, to) });
-  const magnitudeBands = useQuery({ queryKey: ["earthquakes", "magnitude-bands", from, to], queryFn: () => apiService.magnitudeBands(from, to) });
-  const depthBands = useQuery({ queryKey: ["earthquakes", "depth-bands", from, to], queryFn: () => apiService.depthBands(from, to) });
-  const rollups = useQuery({ queryKey: ["earthquakes", "rollups", from, to, net, rollupBucket], queryFn: () => apiService.networkRollups(from, to, net, rollupBucket) });
+  const timeseries = useQuery({ queryKey: ["earthquakes", "timeseries", from, to, bucket, plate, net], queryFn: () => apiService.timeseries(from, to, bucket, plate, net) });
+  // networks list feeds the dropdown — always unfiltered so all options remain selectable
+  const networks = useQuery({ queryKey: ["earthquakes", "top-networks", from, to, plate], queryFn: () => apiService.topNetworks(from, to, plate) });
+  const places = useQuery({ queryKey: ["earthquakes", "top-places", from, to, plate, net], queryFn: () => apiService.topPlaces(from, to, plate, net) });
+  const magnitudeBands = useQuery({ queryKey: ["earthquakes", "magnitude-bands", from, to, plate, net], queryFn: () => apiService.magnitudeBands(from, to, plate, net) });
+  const depthBands = useQuery({ queryKey: ["earthquakes", "depth-bands", from, to, plate, net], queryFn: () => apiService.depthBands(from, to, plate, net) });
+  const rollups = useQuery({ queryKey: ["earthquakes", "rollups", from, to, net, rollupBucket, plate], queryFn: () => apiService.networkRollups(from, to, net, rollupBucket, plate) });
 
   const magnitudeFrequency = useQuery<MagFrequencyBucket[]>({
-    queryKey: ["earthquakes", "magnitude-frequency", from, to],
-    queryFn: () => apiService.magnitudeFrequency(from!, to!),
+    queryKey: ["earthquakes", "magnitude-frequency", from, to, plate, net],
+    queryFn: () => apiService.magnitudeFrequency(from!, to!, plate, net),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });
   const energyTimeseries = useQuery<EnergyBucket[]>({
-    queryKey: ["earthquakes", "energy-timeseries", from, to, bucket],
-    queryFn: () => apiService.energyTimeseries(from!, to!, bucket),
+    queryKey: ["earthquakes", "energy-timeseries", from, to, bucket, plate, net],
+    queryFn: () => apiService.energyTimeseries(from!, to!, bucket, plate, net),
     enabled: !!from && !!to,
     staleTime: 60_000,
   });
   const bValueHistory = useQuery<BValueBucket[]>({
-    queryKey: ["earthquakes", "b-value-history", from, to],
-    queryFn: () => apiService.bValueHistory(from!, to!),
+    queryKey: ["earthquakes", "b-value-history", from, to, bValueBucket, plate, net],
+    queryFn: () => apiService.bValueHistory(from!, to!, bValueBucket, plate, net),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });
   const interEventTimes = useQuery<IETBucket[]>({
-    queryKey: ["earthquakes", "inter-event-times", from, to],
-    queryFn: () => apiService.interEventTimes(from!, to!),
+    queryKey: ["earthquakes", "inter-event-times", from, to, plate, net],
+    queryFn: () => apiService.interEventTimes(from!, to!, plate, net),
     enabled: !!from && !!to,
     staleTime: 120_000,
   });
 
   const seismicRisk = useQuery<SeismicRiskCell[]>({
-    queryKey: ["earthquakes", "seismic-risk"],
-    queryFn: () => apiService.seismicRisk(2),
+    queryKey: ["earthquakes", "seismic-risk", plate, net],
+    queryFn: () => apiService.seismicRisk(2, plate, net),
     staleTime: 120_000,
     refetchInterval: 300_000,
   });
@@ -122,8 +124,21 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     }
   });
 
-  const alertsConnected = useWebSocket(websocketUrl("/ws/alerts"), () => {
-    void queryClient.invalidateQueries({ queryKey: ["anomalies"], exact: false });
+  const alertsConnected = useWebSocket(websocketUrl("/ws/alerts"), (data) => {
+    const next = JSON.parse(data) as AnomalyEvent;
+    // Inject directly into cache — skip round-trip, instant re-render.
+    // Only prepend if the alert matches current plate/net filters (or no filter set).
+    const plateMatch = !plate || next.plate_name === plate;
+    const netMatch = !net || next.source_net === net;
+    if (plateMatch && netMatch) {
+      queryClient.setQueryData<AnomalyEvent[]>(
+        ["anomalies", "history", from, to, plate, net],
+        previous => {
+          const without = (previous ?? []).filter(a => a.anomaly_id !== next.anomaly_id);
+          return [next, ...without];
+        }
+      );
+    }
     void queryClient.invalidateQueries({ queryKey: ["ingestion"], exact: false });
   });
 

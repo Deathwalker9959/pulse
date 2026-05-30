@@ -26,6 +26,8 @@ export interface AnomalyEvent {
   severity: "INFO" | "WARNING" | "CRITICAL";
   source_event_id: string;
   source_place: string;
+  source_net: string;
+  plate_name: string;
   latitude: number;
   longitude: number;
   detail: string;
