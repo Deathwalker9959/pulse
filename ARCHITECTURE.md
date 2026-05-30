@@ -12,18 +12,21 @@ USGS GeoJSON feed (60 s cadence)
    ├─ fetch & parse EarthquakeEvent (httpx async, retry/backoff)
    ├─ SETEX pulse:last-poll-at  → Redis (pipeline health heartbeat)
    ├─ dedup via Redis hash (pulse:seen-events, 7-day TTL)
+   ├─ assign plate_name via H3 pre-index → PB2002 point-in-polygon (shapely)
+   ├─ assign boundary_km via STRtree over PB2002 LineStrings
    ├─ XADD → pulse:events stream   (raw events, transit buffer)
    ├─ batch INSERT → ClickHouse: earthquakes_raw
    ├─ 13 anomaly detectors in parallel (asyncio.gather)
    │   ├─ 7 live detectors (Redis-backed rolling state)
    │   └─ 6 stateless / per-batch detectors
-   ├─ INSERT → ClickHouse: anomaly_events
+   ├─ INSERT → ClickHouse: anomaly_events  (with plate_name, source_net)
    └─ XADD → pulse:alerts stream   (detected anomalies)
          │
          ▼
   [api service]
    ├─ XREAD pulse:events / pulse:alerts → WebSocket fan-out
-   ├─ GET /api/earthquakes/*  → ClickHouse (Redis TTL cache 10–120 s)
+   ├─ GET /api/earthquakes/*  → ClickHouse (Redis TTL cache 10–120 s); all endpoints accept ?plate=&net= filters
+   ├─ GET /api/earthquakes/plates → static plate name list from PB2002 GeoJSON (uncached)
    ├─ GET /api/anomalies/*    → ClickHouse (Redis TTL cache 10 s)
    ├─ GET /api/earthquakes/seismic-risk → ClickHouse (cached 120 s)
    ├─ GET /api/ingestion/status → ClickHouse + Redis (uncached)
@@ -58,9 +61,11 @@ Pub/Sub loses messages if any consumer is down at the moment of publish. Streams
 
 USGS revises events continuously (new stations, recalculated magnitudes). `ReplacingMergeTree` keeps the row with the highest `updated` timestamp per `(time, event_id)` during background merges. Reads that need exact counts use `FINAL`; dashboard queries use the rollup materialized views to avoid the merge cost.
 
-**`earthquakes_hourly_mv_data` / `earthquakes_mag_band_mv_data` / `earthquakes_depth_band_mv_data` / `earthquakes_rollup_net_5m` — `AggregatingMergeTree`**
+**`earthquakes_hourly_mv_data` / `earthquakes_hourly_plate_mv_data` / `earthquakes_mag_band_mv_data` / `earthquakes_depth_band_mv_data` / `earthquakes_rollup_net_5m` / `earthquakes_hourly_bvalue_mv_data` — `AggregatingMergeTree`**
 
 Materialized views maintained incrementally at insert time using `-State` combinators (`uniqExactState`, `sumState`, `countState`). Dashboard queries re-aggregate with `-Merge` combinators, hitting microsecond-latency rollup tables rather than scanning the raw fact table. A hybrid pattern (`_aligned_split`) serves whole-bucket queries from the rollup and partial edge buckets from the raw table, guaranteeing exactness for any window.
+
+`earthquakes_hourly_plate_mv_data` is a plate-keyed variant of the hourly rollup, used when a `plate=` filter is active. `earthquakes_hourly_bvalue_mv_data` pre-aggregates per-hour magnitude sums for fast b-value history queries.
 
 **`anomaly_events` — `MergeTree`**
 
@@ -156,7 +161,7 @@ This is a statistical pattern score, not a deterministic earthquake prediction. 
 | `FINAL` on `earthquakes_raw` is slow at high row counts | Replace with a `earthquakes_latest` AggregatingMergeTree MV (O(1) live lookups) |
 | Single Redis instance is a SPOF | Redis Sentinel or Cluster for HA |
 | Risk score uses raw counts without magnitude-of-completeness correction | Fit Mc locally per cell using the maximum-curvature method before b-value estimation |
-| b-value estimator assumes linear GR above Mc=2.5 globally | Local Mc fitting per cell produces more accurate b-values in low-seismicity regions |
+| b-value estimator assumes linear GR above Mc=2.5 globally | Local Mc fitting per cell produces more accurate b-values in low-seismicity regions; dashboard warns when filtered subset has <10 qualifying buckets |
 | No API authentication | Add OAuth2/JWT, scope read-only for dashboard |
 | Top-places rollup MV only populated from new inserts | Historical rows populate on next ingestion cycle; a backfill via OPTIMIZE TABLE would be needed for immediate accuracy after first deploy |
 
@@ -179,7 +184,7 @@ The `StreamBroadcaster` fans out to all connections from a single asyncio task. 
 The 13 anomaly detectors run inline in the ingestion loop. At 10× event rate, the detection window grows and Redis round-trips pile up. Fix: offload detection to a separate async worker consuming from `pulse:events` rather than running synchronously in the poll cycle.
 
 **5. ClickHouse materialized view fan-out**
-Each insert to `earthquakes_raw` triggers 5 MV inserts (hourly-net, hourly-places, mag-band, depth-band, 5m-net). At very high insert rates this creates write amplification. Fix: batch inserts into larger blocks (currently per-poll-cycle) and monitor part merges with `system.parts`.
+Each insert to `earthquakes_raw` triggers 6 MV inserts (hourly, hourly-plate, hourly-bvalue, mag-band, depth-band, 5m-net). At very high insert rates this creates write amplification. Fix: batch inserts into larger blocks (currently per-poll-cycle) and monitor part merges with `system.parts`.
 
 ---
 
