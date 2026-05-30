@@ -41,6 +41,7 @@ class AnomalyEvent(BaseModel):
     severity: Severity
     source_event_id: str
     source_place: str = ""
+    source_net: str = ""
     latitude: float
     longitude: float
     detail: str

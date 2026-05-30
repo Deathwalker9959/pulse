@@ -90,6 +90,7 @@ def _alert(
         severity=severity,
         source_event_id=event.event_id,
         source_place=event.place,
+        source_net=event.net,
         latitude=event.latitude,
         longitude=event.longitude,
         detail=detail,

@@ -1,6 +1,9 @@
+antimeridian==0.4.7
 clickhouse-connect[async]==1.1.0
+h3==4.5.0
 httpx==0.28.1
 pydantic==2.13.4
 pygeohash==3.3.0
 redis==7.4.0
+shapely==2.0.6
 watchfiles==1.0.5
