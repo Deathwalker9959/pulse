@@ -22,6 +22,11 @@ export function AlertFeed({
   isHeatmapMode = false,
   heatmapResolution = 3,
 }: AlertFeedProps) {
+  const newIds = useMemo(() => {
+    const cutoff = Date.now() - 30_000;
+    return new Set(alerts.filter(a => new Date(a.detected_at).getTime() > cutoff).map(a => a.anomaly_id));
+  }, [alerts]);
+
   const typeCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const alert of alerts) counts[alert.anomaly_type] = (counts[alert.anomaly_type] ?? 0) + 1;
@@ -63,6 +68,13 @@ export function AlertFeed({
         cursor: "pointer",
         borderRadius: "0 4px 4px 0",
         "&:hover": { bgcolor: "action.hover" },
+        ...(newIds.has(alert.anomaly_id) && {
+          animation: "pulse-new 1.8s ease-out",
+          "@keyframes pulse-new": {
+            "0%":   { backgroundColor: "rgba(255, 200, 0, 0.35)" },
+            "100%": { backgroundColor: "transparent" },
+          },
+        }),
       }}
     >
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.3 }}>

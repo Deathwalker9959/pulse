@@ -7,8 +7,7 @@ import type { AnomalyEvent, EarthquakeEvent, HeatmapCell } from "../api/client";
 import { parseApiDate, utcDateTimeLabel } from "../utils/dates";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
-const TECTONIC_URL =
-  "https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/PB2002_boundaries.json";
+const TECTONIC_URL = "/tectonic_boundaries.json";
 
 
 function eventColor(mag: number, isAlert: boolean): string {
@@ -30,7 +29,7 @@ function severityRank(severity: AnomalyEvent["severity"]): number {
   return 2;
 }
 
-function buildEventsGeoJSON(events: EarthquakeEvent[], alertIds: Set<string>) {
+function buildEventsGeoJSON(events: EarthquakeEvent[], alertIds: Set<string>, newIds: Set<string>) {
   return {
     type: "FeatureCollection" as const,
     features: events.map(ev => ({
@@ -44,6 +43,7 @@ function buildEventsGeoJSON(events: EarthquakeEvent[], alertIds: Set<string>) {
         time: ev.time,
         net: ev.net ?? "",
         is_alert: alertIds.has(ev.event_id) ? 1 : 0,
+        is_new: newIds.has(ev.event_id) ? 1 : 0,
         color: eventColor(ev.magnitude, alertIds.has(ev.event_id)),
         radius: Math.max(5, Math.min(22, 3 + ev.magnitude * 2.8)),
       },
@@ -293,6 +293,13 @@ export function MapLibreView({
   const alertIds = useMemo(() => new Set(alerts.map(a => a.source_event_id)), [alerts]);
   useEffect(() => { alertIdsRef.current = alertIds; }, [alertIds]);
 
+  const newEventIds = useMemo(() => {
+    const cutoff = Date.now() - 30_000;
+    return new Set(events.filter(e => new Date(e.time).getTime() > cutoff).map(e => e.event_id));
+  }, [events]);
+  const newEventIdsRef = useRef(newEventIds);
+  useEffect(() => { newEventIdsRef.current = newEventIds; }, [newEventIds]);
+
   function pushData(map: maplibregl.Map) {
     const cells = heatmapRef.current ?? [];
     const maxCount = Math.max(...cells.map(c => c.event_count), 1);
@@ -301,7 +308,7 @@ export function MapLibreView({
     const riskVisible = showRiskLayer && (riskRef.current ?? []).length > 0;
 
     (map.getSource("events") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildEventsGeoJSON(eventsRef.current, alertIdsRef.current));
+      ?.setData(buildEventsGeoJSON(eventsRef.current, alertIdsRef.current, newEventIdsRef.current));
     (map.getSource("anomaly-nodes") as maplibregl.GeoJSONSource | undefined)
       ?.setData(buildAnomalyNodesGeoJSON(alertsRef.current));
     (map.getSource("heatmap") as maplibregl.GeoJSONSource | undefined)
@@ -400,6 +407,22 @@ export function MapLibreView({
           "circle-stroke-width": ["case", ["==", ["get", "is_alert"], 1], 2.5, 1],
           "circle-stroke-color": "#ffffff",
           "circle-stroke-opacity": 0.9,
+        },
+      });
+
+      // ── New event pulse ring ─────────────────────────────────────────────
+      map.addLayer({
+        id: "events-new-pulse",
+        type: "circle",
+        source: "events",
+        filter: ["==", ["get", "is_new"], 1],
+        paint: {
+          "circle-radius": ["*", ["get", "radius"], 2.2],
+          "circle-color": "rgba(255, 210, 0, 0)",
+          "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffd200",
+          "circle-stroke-opacity": 0.85,
+          "circle-opacity": 0,
         },
       });
 
