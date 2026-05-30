@@ -3,7 +3,12 @@ import { useMemo } from "react";
 import { latLngToCell } from "h3-js";
 import type { AnomalyEvent } from "../../api/client";
 import { parseApiDate, utcDateTimeLabel } from "../../utils/dates";
-import { ANOMALY_TYPE_LABEL, SEVERITY_BORDER, SEVERITY_CHIP_COLOR, SEV_ORDER } from "./constants";
+import {
+  ANOMALY_TYPE_LABEL,
+  SEVERITY_BORDER,
+  SEVERITY_CHIP_COLOR,
+  SEV_ORDER,
+} from "./constants";
 
 interface AlertFeedProps {
   alerts: AnomalyEvent[];
@@ -24,34 +29,50 @@ export function AlertFeed({
 }: AlertFeedProps) {
   const newIds = useMemo(() => {
     const cutoff = Date.now() - 30_000;
-    return new Set(alerts.filter(a => new Date(a.detected_at).getTime() > cutoff).map(a => a.anomaly_id));
+    return new Set(
+      alerts
+        .filter((a) => new Date(a.detected_at).getTime() > cutoff)
+        .map((a) => a.anomaly_id),
+    );
   }, [alerts]);
 
   const typeCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const alert of alerts) counts[alert.anomaly_type] = (counts[alert.anomaly_type] ?? 0) + 1;
+    for (const alert of alerts)
+      counts[alert.anomaly_type] = (counts[alert.anomaly_type] ?? 0) + 1;
     return counts;
   }, [alerts]);
 
-  const visible = typeFilter ? alerts.filter(alert => alert.anomaly_type === typeFilter) : alerts;
+  const visible = typeFilter
+    ? alerts.filter((alert) => alert.anomaly_type === typeFilter)
+    : alerts;
 
   const clusters = useMemo(() => {
     if (!isHeatmapMode) return null;
     const byCell = new Map<string, AnomalyEvent[]>();
     for (const alert of visible) {
       try {
-        const key = latLngToCell(alert.latitude, alert.longitude, heatmapResolution).replace(/^0/, "");
+        const key = latLngToCell(
+          alert.latitude,
+          alert.longitude,
+          heatmapResolution,
+        ).replace(/^0/, "");
         if (!byCell.has(key)) byCell.set(key, []);
         byCell.get(key)!.push(alert);
-      } catch { /* ignore invalid coordinates */ }
+      } catch {
+        /* ignore invalid coordinates */
+      }
     }
     return Array.from(byCell.values())
-      .map(group => {
-        group.sort((a, b) => (SEV_ORDER[a.severity] ?? 2) - (SEV_ORDER[b.severity] ?? 2));
+      .map((group) => {
+        group.sort(
+          (a, b) => (SEV_ORDER[a.severity] ?? 2) - (SEV_ORDER[b.severity] ?? 2),
+        );
         return { top: group[0], count: group.length };
       })
       .sort((a, b) => {
-        const severityDelta = (SEV_ORDER[a.top.severity] ?? 2) - (SEV_ORDER[b.top.severity] ?? 2);
+        const severityDelta =
+          (SEV_ORDER[a.top.severity] ?? 2) - (SEV_ORDER[b.top.severity] ?? 2);
         return severityDelta !== 0 ? severityDelta : b.count - a.count;
       });
   }, [visible, isHeatmapMode, heatmapResolution]);
@@ -71,13 +92,18 @@ export function AlertFeed({
         ...(newIds.has(alert.anomaly_id) && {
           animation: "pulse-new 1.8s ease-out",
           "@keyframes pulse-new": {
-            "0%":   { backgroundColor: "rgba(255, 200, 0, 0.35)" },
+            "0%": { backgroundColor: "rgba(255, 200, 0, 0.35)" },
             "100%": { backgroundColor: "transparent" },
           },
         }),
       }}
     >
-      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.3 }}>
+      <Stack
+        direction="row"
+        spacing={0.75}
+        alignItems="center"
+        sx={{ mb: 0.3 }}
+      >
         <Chip
           size="small"
           label={alert.severity}
@@ -85,18 +111,28 @@ export function AlertFeed({
           sx={{ height: 18, fontSize: "0.62rem", fontWeight: 700 }}
         />
         {countBadge !== undefined && countBadge > 1 && (
-          <Chip size="small" label={`${countBadge} signals`} variant="outlined" sx={{ height: 18, fontSize: "0.62rem" }} />
+          <Chip
+            size="small"
+            label={`${countBadge} signals`}
+            variant="outlined"
+            sx={{ height: 18, fontSize: "0.62rem" }}
+          />
         )}
         <Typography variant="subtitle2" sx={{ fontSize: "0.8rem" }}>
-          {ANOMALY_TYPE_LABEL[alert.anomaly_type] ?? alert.anomaly_type.replaceAll("_", " ")}
+          {ANOMALY_TYPE_LABEL[alert.anomaly_type] ??
+            alert.anomaly_type.replaceAll("_", " ")}
         </Typography>
       </Stack>
-      <Typography variant="body2" sx={{ fontSize: "0.78rem" }}>{alert.detail}</Typography>
+      <Typography variant="body2" sx={{ fontSize: "0.78rem" }}>
+        {alert.detail}
+      </Typography>
       <Typography variant="caption" color="text.secondary">
         {alert.source_place ? `${alert.source_place} · ` : ""}
         {utcDateTimeLabel(
-          alert.event_time && parseApiDate(alert.event_time).getUTCFullYear() > 2000
-            ? alert.event_time : alert.detected_at
+          alert.event_time &&
+            parseApiDate(alert.event_time).getUTCFullYear() > 2000
+            ? alert.event_time
+            : alert.detected_at,
         )}
       </Typography>
     </Box>
@@ -123,11 +159,16 @@ export function AlertFeed({
       )}
       <Stack spacing={1}>
         {visible.length === 0 ? (
-          <Typography color="text.secondary" variant="body2">No signals detected yet.</Typography>
-        ) : clusters
-          ? clusters.map(({ top, count }) => alertRow(top, `cluster-${top.anomaly_id}`, count))
-          : visible.map(alert => alertRow(alert, alert.anomaly_id))
-        }
+          <Typography color="text.secondary" variant="body2">
+            No signals detected yet.
+          </Typography>
+        ) : clusters ? (
+          clusters.map(({ top, count }) =>
+            alertRow(top, `cluster-${top.anomaly_id}`, count),
+          )
+        ) : (
+          visible.map((alert) => alertRow(alert, alert.anomaly_id))
+        )}
       </Stack>
     </Stack>
   );

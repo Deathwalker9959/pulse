@@ -11,12 +11,19 @@ interface Props {
 }
 
 function fmt(iso: string): string {
-  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  return new Date(iso).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 export function RangePickerButton({ from, to, onChange }: Props) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
-  const [pending, setPending] = useState<[Date | null, Date | null]>([null, null]);
+  const [pending, setPending] = useState<[Date | null, Date | null]>([
+    null,
+    null,
+  ]);
 
   function open(e: React.MouseEvent<HTMLButtonElement>) {
     setPending([new Date(from), new Date(to)]);

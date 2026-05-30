@@ -113,4 +113,12 @@ export interface SeismicRiskCell {
 }
 
 export type RangePreset = "1h" | "6h" | "24h" | "7d" | "30d" | "ytd";
-export type BucketSize = "1m" | "5m" | "15m" | "1h" | "6h" | "1d" | "1mo" | "1y";
+export type BucketSize =
+  | "1m"
+  | "5m"
+  | "15m"
+  | "1h"
+  | "6h"
+  | "1d"
+  | "1mo"
+  | "1y";

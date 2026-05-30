@@ -1,4 +1,7 @@
-export async function get<T>(path: string, params?: Record<string, string | undefined>): Promise<T> {
+export async function get<T>(
+  path: string,
+  params?: Record<string, string | undefined>,
+): Promise<T> {
   const url = new URL(path, window.location.href);
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
@@ -6,7 +9,8 @@ export async function get<T>(path: string, params?: Record<string, string | unde
     });
   }
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok)
+    throw new Error(`${response.status} ${response.statusText}`);
   return response.json() as Promise<T>;
 }
 

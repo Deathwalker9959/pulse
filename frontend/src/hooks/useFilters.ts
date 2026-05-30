@@ -26,11 +26,16 @@ export function useFilters(onRangeChange?: () => void): Filters {
   });
   const [from, setFrom] = useState(() => {
     const p = readParams();
-    return p.get("from") || resolveRange((p.get("range") as RangePreset) ?? "24h").from;
+    return (
+      p.get("from") ||
+      resolveRange((p.get("range") as RangePreset) ?? "24h").from
+    );
   });
   const [to, setTo] = useState(() => {
     const p = readParams();
-    return p.get("to") || resolveRange((p.get("range") as RangePreset) ?? "24h").to;
+    return (
+      p.get("to") || resolveRange((p.get("range") as RangePreset) ?? "24h").to
+    );
   });
   const [net, setNet] = useState(() => readParams().get("net") ?? "");
   const [plate, setPlate] = useState(() => readParams().get("plate") ?? "");
@@ -47,23 +52,33 @@ export function useFilters(onRangeChange?: () => void): Filters {
       params.set("to", to);
     }
     const qs = params.toString();
-    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+    window.history.replaceState(
+      null,
+      "",
+      qs ? `?${qs}` : window.location.pathname,
+    );
   }, [plate, net, activeRange, from, to]);
 
-  const onPresetClick = useCallback((preset: RangePreset) => {
-    const range = resolveRange(preset);
-    setFrom(range.from);
-    setTo(range.to);
-    setActiveRange(preset);
-    onRangeChange?.();
-  }, [onRangeChange]);
+  const onPresetClick = useCallback(
+    (preset: RangePreset) => {
+      const range = resolveRange(preset);
+      setFrom(range.from);
+      setTo(range.to);
+      setActiveRange(preset);
+      onRangeChange?.();
+    },
+    [onRangeChange],
+  );
 
-  const onPickerChange = useCallback((newFrom: string, newTo: string) => {
-    setFrom(newFrom);
-    setTo(newTo);
-    setActiveRange(null);
-    onRangeChange?.();
-  }, [onRangeChange]);
+  const onPickerChange = useCallback(
+    (newFrom: string, newTo: string) => {
+      setFrom(newFrom);
+      setTo(newTo);
+      setActiveRange(null);
+      onRangeChange?.();
+    },
+    [onRangeChange],
+  );
 
   const onNetChange = useCallback((value: string) => setNet(value), []);
   const onPlateChange = useCallback((value: string) => setPlate(value), []);
@@ -78,5 +93,16 @@ export function useFilters(onRangeChange?: () => void): Filters {
     onRangeChange?.();
   }, [onRangeChange]);
 
-  return { activeRange, from, to, net, plate, onPresetClick, onPickerChange, onNetChange, onPlateChange, clearFilters };
+  return {
+    activeRange,
+    from,
+    to,
+    net,
+    plate,
+    onPresetClick,
+    onPickerChange,
+    onNetChange,
+    onPlateChange,
+    clearFilters,
+  };
 }

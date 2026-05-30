@@ -1,7 +1,13 @@
 import { Container, Stack } from "@mui/material";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { AnomalyEvent, BucketSize, EarthquakeEvent, HeatmapCell, RangePreset } from "./api/client";
+import type {
+  AnomalyEvent,
+  BucketSize,
+  EarthquakeEvent,
+  HeatmapCell,
+  RangePreset,
+} from "./api/client";
 import { apiService } from "./api/service";
 import {
   ActivityCharts,
@@ -14,7 +20,12 @@ import {
 } from "./components/dashboard";
 import { useDashboardData } from "./hooks/useDashboardData";
 import { useFilters } from "./hooks/useFilters";
-import { utcDateLabel, utcMonthYearLabel, utcTimeLabel, utcYearLabel } from "./utils/dates";
+import {
+  utcDateLabel,
+  utcMonthYearLabel,
+  utcTimeLabel,
+  utcYearLabel,
+} from "./utils/dates";
 
 function autoBucket(from: string, to: string): BucketSize {
   const spanMs = new Date(to).getTime() - new Date(from).getTime();
@@ -29,10 +40,22 @@ function autoBucket(from: string, to: string): BucketSize {
 
 export default function App() {
   const [mapView, setMapView] = useState<"globe" | "map">("globe");
-  const [activeLayers, setActiveLayers] = useState<string[]>(["event-hexes", "event-nodes", "signal-nodes"]);
-  const [selectedEvent, setSelectedEvent] = useState<EarthquakeEvent | null>(null);
-  const [focusLatLon, setFocusLatLon] = useState<{ lat: number; lon: number } | null>(null);
-  const [viewCenter, setViewCenter] = useState<{ lat: number; lon: number }>({ lat: 20, lon: 0 });
+  const [activeLayers, setActiveLayers] = useState<string[]>([
+    "event-hexes",
+    "event-nodes",
+    "signal-nodes",
+  ]);
+  const [selectedEvent, setSelectedEvent] = useState<EarthquakeEvent | null>(
+    null,
+  );
+  const [focusLatLon, setFocusLatLon] = useState<{
+    lat: number;
+    lon: number;
+  } | null>(null);
+  const [viewCenter, setViewCenter] = useState<{ lat: number; lon: number }>({
+    lat: 20,
+    lon: 0,
+  });
   const [alertTypeFilter, setAlertTypeFilter] = useState("");
 
   function clearMapFocus() {
@@ -40,8 +63,18 @@ export default function App() {
     setFocusLatLon(null);
   }
 
-  const { activeRange, from, to, net, plate, onPresetClick, onPickerChange, onNetChange, onPlateChange, clearFilters } =
-    useFilters(clearMapFocus);
+  const {
+    activeRange,
+    from,
+    to,
+    net,
+    plate,
+    onPresetClick,
+    onPickerChange,
+    onNetChange,
+    onPlateChange,
+    clearFilters,
+  } = useFilters(clearMapFocus);
 
   function handleTabChange(_: unknown, value: "globe" | "map") {
     setMapView(value);
@@ -58,7 +91,11 @@ export default function App() {
     return "5m";
   }, [bucket]);
 
-  const platesQuery = useQuery({ queryKey: ["earthquakes", "plates"], queryFn: () => apiService.plates(), staleTime: Infinity });
+  const platesQuery = useQuery({
+    queryKey: ["earthquakes", "plates"],
+    queryFn: () => apiService.plates(),
+    staleTime: Infinity,
+  });
   const data = useDashboardData(from, to, net, bucket, rollupBucket, plate);
   const events = data.live.data ?? [];
   const heatmapCells: HeatmapCell[] = data.heatmap.data ?? [];
@@ -73,7 +110,9 @@ export default function App() {
       return;
     }
 
-    const match = events.find(event => event.event_id === alert.source_event_id);
+    const match = events.find(
+      (event) => event.event_id === alert.source_event_id,
+    );
     if (match) {
       setSelectedEvent(match);
       setFocusLatLon(null);
@@ -83,13 +122,22 @@ export default function App() {
     }
   }
 
-  const filteredEvents = net ? events.filter(event => event.net.toLowerCase().includes(net.toLowerCase())) : events;
-  const selectedVisibleEvent = selectedEvent && filteredEvents.some(event => event.event_id === selectedEvent.event_id)
-    ? selectedEvent
-    : null;
+  const filteredEvents = net
+    ? events.filter((event) =>
+        event.net.toLowerCase().includes(net.toLowerCase()),
+      )
+    : events;
+  const selectedVisibleEvent =
+    selectedEvent &&
+    filteredEvents.some((event) => event.event_id === selectedEvent.event_id)
+      ? selectedEvent
+      : null;
   const filteredAlerts = useMemo(
-    () => alertTypeFilter ? alerts.filter(alert => alert.anomaly_type === alertTypeFilter) : alerts,
-    [alerts, alertTypeFilter]
+    () =>
+      alertTypeFilter
+        ? alerts.filter((alert) => alert.anomaly_type === alertTypeFilter)
+        : alerts,
+    [alerts, alertTypeFilter],
   );
 
   function xLabel(isoTime: string): string {
@@ -102,7 +150,10 @@ export default function App() {
   return (
     <Container maxWidth={false} sx={{ py: 3 }}>
       <Stack spacing={3}>
-        <DashboardHeader eventsConnected={data.eventsConnected} alertsConnected={data.alertsConnected} />
+        <DashboardHeader
+          eventsConnected={data.eventsConnected}
+          alertsConnected={data.alertsConnected}
+        />
 
         <DashboardFilters
           activeRange={activeRange}

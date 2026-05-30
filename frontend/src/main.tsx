@@ -10,9 +10,9 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
-      retry: 1
-    }
-  }
+      retry: 1,
+    },
+  },
 });
 
 const theme = createTheme({
@@ -20,12 +20,12 @@ const theme = createTheme({
     mode: "light",
     primary: { main: "#176b87" },
     secondary: { main: "#b45309" },
-    background: { default: "#f4f6f8", paper: "#ffffff" }
+    background: { default: "#f4f6f8", paper: "#ffffff" },
   },
   shape: { borderRadius: 6 },
   typography: {
-    fontFamily: ["Inter", "system-ui", "Segoe UI", "sans-serif"].join(",")
-  }
+    fontFamily: ["Inter", "system-ui", "Segoe UI", "sans-serif"].join(","),
+  },
 });
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -36,5 +36,5 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <App />
       </QueryClientProvider>
     </ThemeProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

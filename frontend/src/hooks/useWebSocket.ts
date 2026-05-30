@@ -4,10 +4,15 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_FACTOR = 1.5;
 
-export function useWebSocket(url: string, onMessage: (data: string) => void): boolean {
+export function useWebSocket(
+  url: string,
+  onMessage: (data: string) => void,
+): boolean {
   const [connected, setConnected] = useState(false);
   const onMessageRef = useRef(onMessage);
-  useEffect(() => { onMessageRef.current = onMessage; });
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  });
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -19,7 +24,10 @@ export function useWebSocket(url: string, onMessage: (data: string) => void): bo
       socket = new WebSocket(url);
 
       socket.onopen = () => {
-        if (cancelled) { socket?.close(); return; }
+        if (cancelled) {
+          socket?.close();
+          return;
+        }
         setConnected(true);
         delay = RECONNECT_BASE_MS;
       };

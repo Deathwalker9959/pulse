@@ -1,8 +1,27 @@
-import { Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
+import {
+  Box,
+  Card,
+  CardContent,
+  Stack,
+  Tooltip as MuiTooltip,
+  Typography,
+} from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type { BandBucket } from "../../api/client";
-import { BAND_LABEL_ORDER, DEPTH_BAND_LABELS, MAG_BAND_LABELS } from "./constants";
+import {
+  BAND_LABEL_ORDER,
+  DEPTH_BAND_LABELS,
+  MAG_BAND_LABELS,
+} from "./constants";
 
 interface BandsChartProps {
   title: string;
@@ -14,15 +33,22 @@ interface BandsChartProps {
 export function BandsChart({ title, data, field, info }: BandsChartProps) {
   const labelMap = field === "mag_band" ? MAG_BAND_LABELS : DEPTH_BAND_LABELS;
   const order = BAND_LABEL_ORDER[field];
-  const byKey = Object.fromEntries(data.map(item => [item[field] ?? "unknown", item.event_count]));
+  const byKey = Object.fromEntries(
+    data.map((item) => [item[field] ?? "unknown", item.event_count]),
+  );
   const chartData = order
-    .filter(key => byKey[key] !== undefined)
-    .map(key => ({ label: labelMap[key] ?? key, count: byKey[key] }));
+    .filter((key) => byKey[key] !== undefined)
+    .map((key) => ({ label: labelMap[key] ?? key, count: byKey[key] }));
 
   return (
     <Card variant="outlined">
       <CardContent>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          sx={{ mb: 2 }}
+        >
           <Typography variant="h6">{title}</Typography>
           {info && (
             <MuiTooltip title={info}>

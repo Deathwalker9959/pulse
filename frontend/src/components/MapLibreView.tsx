@@ -9,7 +9,6 @@ import { parseApiDate, utcDateTimeLabel } from "../utils/dates";
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const TECTONIC_URL = "/tectonic_boundaries.json";
 
-
 function eventColor(mag: number, isAlert: boolean): string {
   if (isAlert) return "#dc2626";
   if (mag >= 5) return "#f97316";
@@ -29,12 +28,19 @@ function severityRank(severity: AnomalyEvent["severity"]): number {
   return 2;
 }
 
-function buildEventsGeoJSON(events: EarthquakeEvent[], alertIds: Set<string>, newIds: Set<string>) {
+function buildEventsGeoJSON(
+  events: EarthquakeEvent[],
+  alertIds: Set<string>,
+  newIds: Set<string>,
+) {
   return {
     type: "FeatureCollection" as const,
-    features: events.map(ev => ({
+    features: events.map((ev) => ({
       type: "Feature" as const,
-      geometry: { type: "Point" as const, coordinates: [ev.longitude, ev.latitude] },
+      geometry: {
+        type: "Point" as const,
+        coordinates: [ev.longitude, ev.latitude],
+      },
       properties: {
         id: ev.event_id,
         magnitude: ev.magnitude,
@@ -54,9 +60,12 @@ function buildEventsGeoJSON(events: EarthquakeEvent[], alertIds: Set<string>, ne
 function buildAnomalyNodesGeoJSON(alerts: AnomalyEvent[]) {
   return {
     type: "FeatureCollection" as const,
-    features: alerts.map(alert => ({
+    features: alerts.map((alert) => ({
       type: "Feature" as const,
-      geometry: { type: "Point" as const, coordinates: [alert.longitude, alert.latitude] },
+      geometry: {
+        type: "Point" as const,
+        coordinates: [alert.longitude, alert.latitude],
+      },
       properties: {
         id: alert.anomaly_id,
         source_event_id: alert.source_event_id,
@@ -66,7 +75,12 @@ function buildAnomalyNodesGeoJSON(alerts: AnomalyEvent[]) {
         detail: alert.detail,
         time: alert.event_time,
         color: anomalyColor(alert.severity),
-        radius: alert.severity === "CRITICAL" ? 12 : alert.severity === "WARNING" ? 10 : 8,
+        radius:
+          alert.severity === "CRITICAL"
+            ? 12
+            : alert.severity === "WARNING"
+              ? 10
+              : 8,
       },
     })),
   };
@@ -79,12 +93,22 @@ function buildHeatmapGeoJSON(cells: HeatmapCell[], maxCount: number) {
       const boundary = cellToBoundary(cell.h3_index) as [number, number][];
       const lons = boundary.map(([, lon]) => lon);
       if (Math.max(...lons) - Math.min(...lons) > 180) continue;
-      const ring = [...boundary.map(([lat, lon]) => [lon, lat]), [boundary[0][1], boundary[0][0]]];
-      const opacity = Math.min(0.82, 0.18 + (cell.event_count / maxCount) * 0.64);
+      const ring = [
+        ...boundary.map(([lat, lon]) => [lon, lat]),
+        [boundary[0][1], boundary[0][0]],
+      ];
+      const opacity = Math.min(
+        0.82,
+        0.18 + (cell.event_count / maxCount) * 0.64,
+      );
       const color =
-        cell.max_magnitude >= 6 ? "#dc2626" :
-        cell.max_magnitude >= 5 ? "#f97316" :
-        cell.max_magnitude >= 3 ? "#ca8a04" : "#16a34a";
+        cell.max_magnitude >= 6
+          ? "#dc2626"
+          : cell.max_magnitude >= 5
+            ? "#f97316"
+            : cell.max_magnitude >= 3
+              ? "#ca8a04"
+              : "#16a34a";
       features.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
@@ -99,9 +123,13 @@ function buildHeatmapGeoJSON(cells: HeatmapCell[], maxCount: number) {
           color,
         },
       });
-    } catch { /* skip bad cell */ }
+    } catch {
+      /* skip bad cell */
+    }
   }
-  return { type: "FeatureCollection" as const, features } as Parameters<maplibregl.GeoJSONSource["setData"]>[0];
+  return { type: "FeatureCollection" as const, features } as Parameters<
+    maplibregl.GeoJSONSource["setData"]
+  >[0];
 }
 
 function buildAnomalyHexGeoJSON(alerts: AnomalyEvent[], resolution: number) {
@@ -111,19 +139,29 @@ function buildAnomalyHexGeoJSON(alerts: AnomalyEvent[], resolution: number) {
       const key = latLngToCell(alert.latitude, alert.longitude, resolution);
       if (!byCell.has(key)) byCell.set(key, []);
       byCell.get(key)!.push(alert);
-    } catch { /* skip bad alert coordinates */ }
+    } catch {
+      /* skip bad alert coordinates */
+    }
   }
 
-  const maxCount = Math.max(...Array.from(byCell.values(), group => group.length), 1);
+  const maxCount = Math.max(
+    ...Array.from(byCell.values(), (group) => group.length),
+    1,
+  );
   const features: object[] = [];
   for (const [h3Index, group] of byCell.entries()) {
     try {
       const boundary = cellToBoundary(h3Index) as [number, number][];
       const lons = boundary.map(([, lon]) => lon);
       if (Math.max(...lons) - Math.min(...lons) > 180) continue;
-      const ring = [...boundary.map(([lat, lon]) => [lon, lat]), [boundary[0][1], boundary[0][0]]];
-      const top = [...group].sort((a, b) => severityRank(a.severity) - severityRank(b.severity))[0];
-      const typeCount = new Set(group.map(item => item.anomaly_type)).size;
+      const ring = [
+        ...boundary.map(([lat, lon]) => [lon, lat]),
+        [boundary[0][1], boundary[0][0]],
+      ];
+      const top = [...group].sort(
+        (a, b) => severityRank(a.severity) - severityRank(b.severity),
+      )[0];
+      const typeCount = new Set(group.map((item) => item.anomaly_type)).size;
       features.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
@@ -137,9 +175,13 @@ function buildAnomalyHexGeoJSON(alerts: AnomalyEvent[], resolution: number) {
           color: anomalyColor(top.severity),
         },
       });
-    } catch { /* skip bad cell */ }
+    } catch {
+      /* skip bad cell */
+    }
   }
-  return { type: "FeatureCollection" as const, features } as Parameters<maplibregl.GeoJSONSource["setData"]>[0];
+  return { type: "FeatureCollection" as const, features } as Parameters<
+    maplibregl.GeoJSONSource["setData"]
+  >[0];
 }
 
 function eventPopupHTML(ev: EarthquakeEvent): string {
@@ -155,14 +197,19 @@ function cellPopupHTML(count: number, maxMag: number, avgMag: number): string {
 }
 
 function addCursorPointer(map: maplibregl.Map, layerId: string): void {
-  map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
-  map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
+  map.on("mouseenter", layerId, () => {
+    map.getCanvas().style.cursor = "pointer";
+  });
+  map.on("mouseleave", layerId, () => {
+    map.getCanvas().style.cursor = "";
+  });
 }
 
 function anomalyPopupHTML(alert: AnomalyEvent): string {
-  const displayTime = alert.event_time && parseApiDate(alert.event_time).getUTCFullYear() > 2000
-    ? alert.event_time
-    : alert.detected_at;
+  const displayTime =
+    alert.event_time && parseApiDate(alert.event_time).getUTCFullYear() > 2000
+      ? alert.event_time
+      : alert.detected_at;
   return (
     `<strong>${alert.anomaly_type.replaceAll("_", " ")}</strong><br/>` +
     `${alert.severity} · ${alert.source_place || "Unknown"}<br/>` +
@@ -221,7 +268,10 @@ function buildRiskGeoJSON(cells: RiskCell[]) {
       const boundary = cellToBoundary(cell.h3_index) as [number, number][];
       const lons = boundary.map(([, lon]) => lon);
       if (Math.max(...lons) - Math.min(...lons) > 180) continue;
-      const ring = [...boundary.map(([lat, lon]) => [lon, lat]), [boundary[0][1], boundary[0][0]]];
+      const ring = [
+        ...boundary.map(([lat, lon]) => [lon, lat]),
+        [boundary[0][1], boundary[0][0]],
+      ];
       features.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
@@ -235,14 +285,25 @@ function buildRiskGeoJSON(cells: RiskCell[]) {
           extrusion_height: Math.round(cell.risk_score * 600_000),
         },
       });
-    } catch { /* skip bad cell */ }
+    } catch {
+      /* skip bad cell */
+    }
   }
-  return { type: "FeatureCollection" as const, features } as Parameters<maplibregl.GeoJSONSource["setData"]>[0];
+  return { type: "FeatureCollection" as const, features } as Parameters<
+    maplibregl.GeoJSONSource["setData"]
+  >[0];
 }
 
 function riskPopupHTML(props: Record<string, unknown>): string {
   const score = Number(props.risk_score);
-  const label = score >= 0.7 ? "Elevated" : score >= 0.4 ? "Moderate" : score >= 0.2 ? "Low-moderate" : "Low";
+  const label =
+    score >= 0.7
+      ? "Elevated"
+      : score >= 0.4
+        ? "Moderate"
+        : score >= 0.2
+          ? "Low-moderate"
+          : "Low";
   const bVal = props.b_value != null ? Number(props.b_value).toFixed(2) : "n/a";
   return (
     `<strong>Seismic risk: ${label}</strong><br/>` +
@@ -270,62 +331,122 @@ export function MapLibreView({
   showRiskLayer = false,
   anomalyHexResolution = 3,
 }: Props) {
-  const hostRef        = useRef<HTMLDivElement | null>(null);
-  const mapRef         = useRef<maplibregl.Map | null>(null);
-  const isLoadedRef    = useRef(false);
-  const popupRef       = useRef<maplibregl.Popup | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const isLoadedRef = useRef(false);
+  const popupRef = useRef<maplibregl.Popup | null>(null);
 
-  const eventsRef      = useRef(events);
-  const heatmapRef     = useRef(heatmapCells);
-  const riskRef        = useRef(riskCells);
-  const alertsRef      = useRef(alerts);
-  const onSelectRef    = useRef(onSelect);
+  const eventsRef = useRef(events);
+  const heatmapRef = useRef(heatmapCells);
+  const riskRef = useRef(riskCells);
+  const alertsRef = useRef(alerts);
+  const onSelectRef = useRef(onSelect);
   const onViewChangeRef = useRef(onViewChange);
-  const alertIdsRef    = useRef(new Set<string>());
+  const alertIdsRef = useRef(new Set<string>());
 
-  useEffect(() => { eventsRef.current = events; });
-  useEffect(() => { heatmapRef.current = heatmapCells; });
-  useEffect(() => { riskRef.current = riskCells; });
-  useEffect(() => { alertsRef.current = alerts; });
-  useEffect(() => { onSelectRef.current = onSelect; });
-  useEffect(() => { onViewChangeRef.current = onViewChange; });
+  useEffect(() => {
+    eventsRef.current = events;
+  });
+  useEffect(() => {
+    heatmapRef.current = heatmapCells;
+  });
+  useEffect(() => {
+    riskRef.current = riskCells;
+  });
+  useEffect(() => {
+    alertsRef.current = alerts;
+  });
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  });
+  useEffect(() => {
+    onViewChangeRef.current = onViewChange;
+  });
 
-  const alertIds = useMemo(() => new Set(alerts.map(a => a.source_event_id)), [alerts]);
-  useEffect(() => { alertIdsRef.current = alertIds; }, [alertIds]);
+  const alertIds = useMemo(
+    () => new Set(alerts.map((a) => a.source_event_id)),
+    [alerts],
+  );
+  useEffect(() => {
+    alertIdsRef.current = alertIds;
+  }, [alertIds]);
 
   const newEventIds = useMemo(() => {
     const cutoff = Date.now() - 30_000;
-    return new Set(events.filter(e => new Date(e.time).getTime() > cutoff).map(e => e.event_id));
+    return new Set(
+      events
+        .filter((e) => new Date(e.time).getTime() > cutoff)
+        .map((e) => e.event_id),
+    );
   }, [events]);
   const newEventIdsRef = useRef(newEventIds);
-  useEffect(() => { newEventIdsRef.current = newEventIds; }, [newEventIds]);
+  useEffect(() => {
+    newEventIdsRef.current = newEventIds;
+  }, [newEventIds]);
 
   function pushData(map: maplibregl.Map) {
     const cells = heatmapRef.current ?? [];
-    const maxCount = Math.max(...cells.map(c => c.event_count), 1);
+    const maxCount = Math.max(...cells.map((c) => c.event_count), 1);
     const eventHexesVisible = showEventHexes && cells.length > 0;
     const signalHexesVisible = showSignalHexes && alertsRef.current.length > 0;
     const riskVisible = showRiskLayer && (riskRef.current ?? []).length > 0;
 
-    (map.getSource("events") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildEventsGeoJSON(eventsRef.current, alertIdsRef.current, newEventIdsRef.current));
-    (map.getSource("anomaly-nodes") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildAnomalyNodesGeoJSON(alertsRef.current));
-    (map.getSource("heatmap") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildHeatmapGeoJSON(cells, maxCount));
-    (map.getSource("anomaly-hexes") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildAnomalyHexGeoJSON(alertsRef.current, anomalyHexResolution));
-    (map.getSource("risk") as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildRiskGeoJSON(riskRef.current ?? []));
+    (map.getSource("events") as maplibregl.GeoJSONSource | undefined)?.setData(
+      buildEventsGeoJSON(
+        eventsRef.current,
+        alertIdsRef.current,
+        newEventIdsRef.current,
+      ),
+    );
+    (
+      map.getSource("anomaly-nodes") as maplibregl.GeoJSONSource | undefined
+    )?.setData(buildAnomalyNodesGeoJSON(alertsRef.current));
+    (map.getSource("heatmap") as maplibregl.GeoJSONSource | undefined)?.setData(
+      buildHeatmapGeoJSON(cells, maxCount),
+    );
+    (
+      map.getSource("anomaly-hexes") as maplibregl.GeoJSONSource | undefined
+    )?.setData(buildAnomalyHexGeoJSON(alertsRef.current, anomalyHexResolution));
+    (map.getSource("risk") as maplibregl.GeoJSONSource | undefined)?.setData(
+      buildRiskGeoJSON(riskRef.current ?? []),
+    );
 
     if (map.getLayer("heatmap-fill")) {
-      map.setLayoutProperty("heatmap-fill", "visibility", eventHexesVisible ? "visible" : "none");
-      map.setLayoutProperty("heatmap-outline", "visibility", eventHexesVisible ? "visible" : "none");
-      map.setLayoutProperty("anomaly-hex-fill", "visibility", signalHexesVisible ? "visible" : "none");
-      map.setLayoutProperty("anomaly-hex-outline", "visibility", signalHexesVisible ? "visible" : "none");
-      map.setLayoutProperty("events-circles", "visibility", showEventNodes ? "visible" : "none");
-      map.setLayoutProperty("anomaly-circles", "visibility", showSignalNodes ? "visible" : "none");
-      map.setLayoutProperty("risk-extrusion", "visibility", riskVisible ? "visible" : "none");
+      map.setLayoutProperty(
+        "heatmap-fill",
+        "visibility",
+        eventHexesVisible ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "heatmap-outline",
+        "visibility",
+        eventHexesVisible ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "anomaly-hex-fill",
+        "visibility",
+        signalHexesVisible ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "anomaly-hex-outline",
+        "visibility",
+        signalHexesVisible ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "events-circles",
+        "visibility",
+        showEventNodes ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "anomaly-circles",
+        "visibility",
+        showSignalNodes ? "visible" : "none",
+      );
+      map.setLayoutProperty(
+        "risk-extrusion",
+        "visibility",
+        riskVisible ? "visible" : "none",
+      );
     }
   }
 
@@ -343,13 +464,21 @@ export function MapLibreView({
     });
     mapRef.current = map;
 
-    map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(
+      new maplibregl.AttributionControl({ compact: true }),
+      "bottom-left",
+    );
+    map.addControl(
+      new maplibregl.NavigationControl({ showCompass: false }),
+      "top-right",
+    );
 
     map.on("load", () => {
       isLoadedRef.current = true;
 
-      map.setProjection({ type: projection === "globe" ? "globe" : "mercator" });
+      map.setProjection({
+        type: projection === "globe" ? "globe" : "mercator",
+      });
 
       // ── Tectonic plates ──────────────────────────────────────────────────
       map.addSource("tectonic", { type: "geojson", data: TECTONIC_URL });
@@ -357,45 +486,72 @@ export function MapLibreView({
         id: "tectonic-lines",
         type: "line",
         source: "tectonic",
-        paint: { "line-color": "#fb923c", "line-width": 1.5, "line-opacity": 0.65 },
+        paint: {
+          "line-color": "#fb923c",
+          "line-width": 1.5,
+          "line-opacity": 0.65,
+        },
       });
 
       // ── Heatmap polygons ─────────────────────────────────────────────────
-      map.addSource("heatmap", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("heatmap", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "heatmap-fill",
         type: "fill",
         source: "heatmap",
         layout: { visibility: "none" },
-        paint: { "fill-color": ["get", "color"], "fill-opacity": ["get", "fill_opacity"] },
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": ["get", "fill_opacity"],
+        },
       });
       map.addLayer({
         id: "heatmap-outline",
         type: "line",
         source: "heatmap",
         layout: { visibility: "none" },
-        paint: { "line-color": ["get", "color"], "line-width": 1, "line-opacity": 0.45 },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": 1,
+          "line-opacity": 0.45,
+        },
       });
 
       // ── Anomaly distribution polygons ────────────────────────────────────
-      map.addSource("anomaly-hexes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("anomaly-hexes", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "anomaly-hex-fill",
         type: "fill",
         source: "anomaly-hexes",
         layout: { visibility: "none" },
-        paint: { "fill-color": ["get", "color"], "fill-opacity": ["get", "fill_opacity"] },
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": ["get", "fill_opacity"],
+        },
       });
       map.addLayer({
         id: "anomaly-hex-outline",
         type: "line",
         source: "anomaly-hexes",
         layout: { visibility: "none" },
-        paint: { "line-color": ["get", "color"], "line-width": 1.4, "line-opacity": 0.55 },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": 1.4,
+          "line-opacity": 0.55,
+        },
       });
 
       // ── Event circles ────────────────────────────────────────────────────
-      map.addSource("events", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("events", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "events-circles",
         type: "circle",
@@ -404,7 +560,12 @@ export function MapLibreView({
           "circle-radius": ["get", "radius"],
           "circle-color": ["get", "color"],
           "circle-opacity": 0.75,
-          "circle-stroke-width": ["case", ["==", ["get", "is_alert"], 1], 2.5, 1],
+          "circle-stroke-width": [
+            "case",
+            ["==", ["get", "is_alert"], 1],
+            2.5,
+            1,
+          ],
           "circle-stroke-color": "#ffffff",
           "circle-stroke-opacity": 0.9,
         },
@@ -427,7 +588,10 @@ export function MapLibreView({
       });
 
       // ── Anomaly nodes ────────────────────────────────────────────────────
-      map.addSource("anomaly-nodes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("anomaly-nodes", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "anomaly-circles",
         type: "circle",
@@ -444,7 +608,10 @@ export function MapLibreView({
       });
 
       // ── Seismic risk forecast — extruded spikes ──────────────────────────
-      map.addSource("risk", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource("risk", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
       map.addLayer({
         id: "risk-extrusion",
         type: "fill-extrusion",
@@ -461,15 +628,20 @@ export function MapLibreView({
       pushData(map);
 
       // ── Event click ──────────────────────────────────────────────────────
-      map.on("click", "events-circles", e => {
+      map.on("click", "events-circles", (e) => {
         if (!e.features?.length) return;
         const props = e.features[0].properties as Record<string, unknown>;
-        const ev = eventsRef.current.find(x => x.event_id === props.id);
+        const ev = eventsRef.current.find((x) => x.event_id === props.id);
         if (ev) {
           onSelectRef.current?.(ev);
           popupRef.current?.remove();
-          const [lng, lat] = (e.features[0].geometry as { coordinates: number[] }).coordinates;
-          popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+          const [lng, lat] = (
+            e.features[0].geometry as { coordinates: number[] }
+          ).coordinates;
+          popupRef.current = new maplibregl.Popup({
+            closeButton: true,
+            maxWidth: "260px",
+          })
             .setLngLat([lng, lat])
             .setHTML(eventPopupHTML(ev))
             .addTo(map);
@@ -477,14 +649,19 @@ export function MapLibreView({
       });
 
       // ── Anomaly node click ───────────────────────────────────────────────
-      map.on("click", "anomaly-circles", e => {
+      map.on("click", "anomaly-circles", (e) => {
         if (!e.features?.length) return;
         const props = e.features[0].properties as Record<string, unknown>;
-        const alert = alertsRef.current.find(x => x.anomaly_id === props.id);
+        const alert = alertsRef.current.find((x) => x.anomaly_id === props.id);
         if (alert) {
           popupRef.current?.remove();
-          const [lng, lat] = (e.features[0].geometry as { coordinates: number[] }).coordinates;
-          popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" })
+          const [lng, lat] = (
+            e.features[0].geometry as { coordinates: number[] }
+          ).coordinates;
+          popupRef.current = new maplibregl.Popup({
+            closeButton: true,
+            maxWidth: "280px",
+          })
             .setLngLat([lng, lat])
             .setHTML(anomalyPopupHTML(alert))
             .addTo(map);
@@ -492,38 +669,53 @@ export function MapLibreView({
       });
 
       // ── Heatmap cell click ───────────────────────────────────────────────
-      map.on("click", "heatmap-fill", e => {
+      map.on("click", "heatmap-fill", (e) => {
         if (!e.features?.length) return;
         const props = e.features[0].properties as Record<string, unknown>;
-        const cell = heatmapRef.current?.find(c => c.h3_index.replace(/^0/, "") === String(props.h3_index).replace(/^0/, ""));
+        const cell = heatmapRef.current?.find(
+          (c) =>
+            c.h3_index.replace(/^0/, "") ===
+            String(props.h3_index).replace(/^0/, ""),
+        );
         popupRef.current?.remove();
-        popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
+        popupRef.current = new maplibregl.Popup({
+          closeButton: true,
+          maxWidth: "240px",
+        })
           .setLngLat(e.lngLat)
-          .setHTML(cellPopupHTML(
-            cell?.event_count ?? Number(props.event_count),
-            cell?.max_magnitude ?? Number(props.max_magnitude),
-            cell?.avg_magnitude ?? Number(props.avg_magnitude),
-          ))
+          .setHTML(
+            cellPopupHTML(
+              cell?.event_count ?? Number(props.event_count),
+              cell?.max_magnitude ?? Number(props.max_magnitude),
+              cell?.avg_magnitude ?? Number(props.avg_magnitude),
+            ),
+          )
           .addTo(map);
       });
 
       // ── Anomaly hex click ────────────────────────────────────────────────
-      map.on("click", "anomaly-hex-fill", e => {
+      map.on("click", "anomaly-hex-fill", (e) => {
         if (!e.features?.length) return;
         const props = e.features[0].properties as Record<string, unknown>;
         popupRef.current?.remove();
-        popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
+        popupRef.current = new maplibregl.Popup({
+          closeButton: true,
+          maxWidth: "240px",
+        })
           .setLngLat(e.lngLat)
           .setHTML(anomalyHexPopupHTML(props))
           .addTo(map);
       });
 
       // ── Risk spike click ─────────────────────────────────────────────────
-      map.on("click", "risk-extrusion", e => {
+      map.on("click", "risk-extrusion", (e) => {
         if (!e.features?.length) return;
         const props = e.features[0].properties as Record<string, unknown>;
         popupRef.current?.remove();
-        popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+        popupRef.current = new maplibregl.Popup({
+          closeButton: true,
+          maxWidth: "260px",
+        })
           .setLngLat(e.lngLat)
           .setHTML(riskPopupHTML(props))
           .addTo(map);
@@ -561,7 +753,19 @@ export function MapLibreView({
     const map = mapRef.current;
     if (!map || !isLoadedRef.current) return;
     pushData(map);
-  }, [events, heatmapCells, riskCells, alertIds, alerts, showEventHexes, showSignalHexes, showEventNodes, showSignalNodes, showRiskLayer, anomalyHexResolution]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    events,
+    heatmapCells,
+    riskCells,
+    alertIds,
+    alerts,
+    showEventHexes,
+    showSignalHexes,
+    showEventNodes,
+    showSignalNodes,
+    showRiskLayer,
+    anomalyHexResolution,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Clear stale popup when parent clears map focus ────────────────────────
   useEffect(() => {
@@ -575,11 +779,18 @@ export function MapLibreView({
     const map = mapRef.current;
     if (!map || !selectedEvent) return;
     popupRef.current?.remove();
-    popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+    popupRef.current = new maplibregl.Popup({
+      closeButton: true,
+      maxWidth: "260px",
+    })
       .setLngLat([selectedEvent.longitude, selectedEvent.latitude])
       .setHTML(eventPopupHTML(selectedEvent))
       .addTo(map);
-    map.flyTo({ center: [selectedEvent.longitude, selectedEvent.latitude], zoom: Math.max(map.getZoom(), 5), duration: 1200 });
+    map.flyTo({
+      center: [selectedEvent.longitude, selectedEvent.latitude],
+      zoom: Math.max(map.getZoom(), 5),
+      duration: 1200,
+    });
   }, [selectedEvent]);
 
   // ── FlyTo + popup for heatmap cell focus ──────────────────────────────────
@@ -590,25 +801,44 @@ export function MapLibreView({
     if (cells.length > 0) {
       try {
         const res = getResolution(cells[0].h3_index);
-        const idx = latLngToCell(focusLatLon.lat, focusLatLon.lon, res).replace(/^0/, "");
-        const cell = cells.find(c => c.h3_index.replace(/^0/, "") === idx);
+        const idx = latLngToCell(focusLatLon.lat, focusLatLon.lon, res).replace(
+          /^0/,
+          "",
+        );
+        const cell = cells.find((c) => c.h3_index.replace(/^0/, "") === idx);
         if (cell) {
           popupRef.current?.remove();
-          popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
+          popupRef.current = new maplibregl.Popup({
+            closeButton: true,
+            maxWidth: "240px",
+          })
             .setLngLat([focusLatLon.lon, focusLatLon.lat])
-            .setHTML(cellPopupHTML(cell.event_count, cell.max_magnitude, cell.avg_magnitude))
+            .setHTML(
+              cellPopupHTML(
+                cell.event_count,
+                cell.max_magnitude,
+                cell.avg_magnitude,
+              ),
+            )
             .addTo(map);
         }
-      } catch { /* */ }
+      } catch {
+        /* */
+      }
     }
-    map.flyTo({ center: [focusLatLon.lon, focusLatLon.lat], zoom: Math.max(map.getZoom(), 5), duration: 1200 });
+    map.flyTo({
+      center: [focusLatLon.lon, focusLatLon.lat],
+      zoom: Math.max(map.getZoom(), 5),
+      duration: 1200,
+    });
   }, [focusLatLon]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Box
       ref={hostRef}
       sx={{
-        height: "100%", minHeight: 520,
+        height: "100%",
+        minHeight: 520,
         "& .maplibregl-canvas": { borderRadius: 0 },
         "& .maplibregl-map": { borderRadius: 1 },
       }}

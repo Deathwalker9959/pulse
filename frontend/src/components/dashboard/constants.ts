@@ -37,7 +37,11 @@ export const SEVERITY_BORDER = {
   INFO: "info.main",
 } as const;
 
-export const SEV_ORDER: Record<string, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
+export const SEV_ORDER: Record<string, number> = {
+  CRITICAL: 0,
+  WARNING: 1,
+  INFO: 2,
+};
 
 export const MAG_BAND_LABELS: Record<string, string> = {
   micro: "M < 1",
