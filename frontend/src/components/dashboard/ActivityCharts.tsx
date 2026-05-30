@@ -1,4 +1,6 @@
-import { Box, Card, CardContent, Typography } from "@mui/material";
+import { Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
+import { useMemo } from "react";
+import InfoIcon from "@mui/icons-material/Info";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BucketSize, NetworkRollup, TimeseriesBucket } from "../../api/client";
 
@@ -10,17 +12,37 @@ interface ActivityChartsProps {
 }
 
 export function ActivityCharts({ bucket, timeseries, rollups, xLabel }: ActivityChartsProps) {
-  const rollupData = rollups.map(item => ({
-    time: xLabel(item.bucket),
-    events: item.event_count,
-    magnitude: Number(item.avg_magnitude.toFixed(2)),
-  }));
+  // Group by time bucket, summing event_count across all networks (or the single filtered net)
+  const rollupData = useMemo(() => {
+    const byTime = new Map<string, { events: number; magnitude: number; count: number }>();
+    for (const item of rollups) {
+      const t = xLabel(item.bucket);
+      const existing = byTime.get(t);
+      if (existing) {
+        existing.events += item.event_count;
+        existing.magnitude += item.avg_magnitude;
+        existing.count += 1;
+      } else {
+        byTime.set(t, { events: item.event_count, magnitude: item.avg_magnitude, count: 1 });
+      }
+    }
+    return Array.from(byTime.entries()).map(([time, v]) => ({
+      time,
+      events: v.events,
+      magnitude: Number((v.magnitude / v.count).toFixed(2)),
+    }));
+  }, [rollups, xLabel]);
 
   return (
     <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "2fr 1fr" }, gap: 2 }}>
       <Card variant="outlined">
         <CardContent>
-          <Typography variant="h6" gutterBottom>Event Volume ({bucket === "1mo" ? "monthly" : bucket === "1y" ? "yearly" : `${bucket} buckets`})</Typography>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+            <Typography variant="h6">Event Volume ({bucket === "1mo" ? "monthly" : bucket === "1y" ? "yearly" : `${bucket} buckets`})</Typography>
+            <MuiTooltip title="Number of seismic events detected per time bucket">
+              <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+            </MuiTooltip>
+          </Stack>
           <Box sx={{ height: 260 }}>
             <ResponsiveContainer>
               <AreaChart data={timeseries.map(item => ({ ...item, label: xLabel(item.time) }))}>
@@ -36,7 +58,12 @@ export function ActivityCharts({ bucket, timeseries, rollups, xLabel }: Activity
       </Card>
       <Card variant="outlined">
         <CardContent>
-          <Typography variant="h6" gutterBottom>Network Rollup</Typography>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+            <Typography variant="h6">Network Rollup</Typography>
+            <MuiTooltip title="Event count aggregated by seismic network source">
+              <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+            </MuiTooltip>
+          </Stack>
           <Box sx={{ height: 260 }}>
             <ResponsiveContainer>
               <LineChart data={rollupData}>

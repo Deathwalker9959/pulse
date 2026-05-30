@@ -1,9 +1,17 @@
-import { Box, Card, CardContent, Typography } from "@mui/material";
+import { Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BandBucket } from "../../api/client";
 import { BAND_LABEL_ORDER, DEPTH_BAND_LABELS, MAG_BAND_LABELS } from "./constants";
 
-export function BandsChart({ title, data, field }: { title: string; data: BandBucket[]; field: "mag_band" | "depth_band" }) {
+interface BandsChartProps {
+  title: string;
+  data: BandBucket[];
+  field: "mag_band" | "depth_band";
+  info?: string;
+}
+
+export function BandsChart({ title, data, field, info }: BandsChartProps) {
   const labelMap = field === "mag_band" ? MAG_BAND_LABELS : DEPTH_BAND_LABELS;
   const order = BAND_LABEL_ORDER[field];
   const byKey = Object.fromEntries(data.map(item => [item[field] ?? "unknown", item.event_count]));
@@ -14,7 +22,14 @@ export function BandsChart({ title, data, field }: { title: string; data: BandBu
   return (
     <Card variant="outlined">
       <CardContent>
-        <Typography variant="h6" gutterBottom>{title}</Typography>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+          <Typography variant="h6">{title}</Typography>
+          {info && (
+            <MuiTooltip title={info}>
+              <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+            </MuiTooltip>
+          )}
+        </Stack>
         <Box sx={{ height: 220 }}>
           <ResponsiveContainer>
             <BarChart data={chartData}>

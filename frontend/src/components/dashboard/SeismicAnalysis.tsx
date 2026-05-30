@@ -1,4 +1,5 @@
-import { Box, Card, CardContent, Typography } from "@mui/material";
+import { Box, Card, CardContent, Stack, Tooltip as MuiTooltip, Typography } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../../api/client";
@@ -13,6 +14,17 @@ interface SeismicAnalysisProps {
   xLabel: (iso: string) => string;
 }
 
+function formatEnergy(joules: number): string {
+  const units = ["J", "kJ", "MJ", "GJ", "TJ"];
+  let value = joules;
+  let unitIndex = 0;
+  while (value >= 1000 && unitIndex < units.length - 1) {
+    value /= 1000;
+    unitIndex++;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
 export function SeismicAnalysis({
   magnitudeFrequency,
   energyTimeseries,
@@ -24,7 +36,7 @@ export function SeismicAnalysis({
     const sorted = [...magnitudeFrequency].sort((a, b) => a.mag_bin - b.mag_bin);
     let cumN = sorted.reduce((sum, bucket) => sum + bucket.event_count, 0);
     return sorted
-      .filter(() => cumN > 0)
+      .filter(bucket => bucket.mag_bin >= MC && cumN > 0)
       .map(bucket => {
         const point = { mag: bucket.mag_bin, logCumN: cumN > 0 ? Math.log10(cumN) : 0 };
         cumN -= bucket.event_count;
@@ -54,9 +66,14 @@ export function SeismicAnalysis({
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(2, 1fr)" }, gap: 2 }}>
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="h6" gutterBottom>
-              G–R Distribution{grBValue !== null ? ` · b = ${grBValue.toFixed(2)}` : ""}
-            </Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+              <Typography variant="h6">
+                G–R Distribution{grBValue !== null ? ` · b = ${grBValue.toFixed(2)}` : ""}
+              </Typography>
+              <MuiTooltip title={grBValue === null ? "Gutenberg-Richter relationship: cumulative frequency vs magnitude. b-value calculated from mean magnitude (need ≥20 events M≥2.5)." : `b-value from mean magnitude: ${grBValue.toFixed(2)}. ${grBValue < 0.5 ? "Critical: predominantly large events" : grBValue < 0.7 ? "Warning: higher proportion of large events" : "Normal: balanced magnitude distribution"}. Time range: selected window. Chart shows actual G–R slope.`}>
+                <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+              </MuiTooltip>
+            </Stack>
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <LineChart data={grPoints}>
@@ -72,15 +89,36 @@ export function SeismicAnalysis({
         </Card>
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="h6" gutterBottom>B-Value History</Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+              <Typography variant="h6">B-Value History</Typography>
+              <MuiTooltip title="B-value evolution over time. Lower values indicate higher proportion of large events. Red line: critical threshold (0.5), orange: warning (0.7).">
+                <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+              </MuiTooltip>
+            </Stack>
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <LineChart data={bValueHistory}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="day" tickFormatter={day => utcDateLabel(String(day))} />
-                  <YAxis domain={[0, 2.5]} allowDecimals />
+                  <XAxis dataKey="day" tickFormatter={day => {
+                    const dateStr = String(day);
+                    const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+                    if (match) {
+                      const [, , month, date, hour] = match;
+                      return `${month}-${date} ${hour}:00`;
+                    }
+                    return utcDateLabel(dateStr);
+                  }} />
+                  <YAxis domain={[0, 2.5]} allowDecimals label={{ value: "b-value", angle: -90, position: "insideLeft", fontSize: 11 }} />
                   <Tooltip
-                    labelFormatter={day => utcDateLabel(String(day))}
+                    labelFormatter={day => {
+                      const dateStr = String(day);
+                      const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+                      if (match) {
+                        const [, year, month, date, hour, min] = match;
+                        return `${year}-${month}-${date} ${hour}:${min}`;
+                      }
+                      return utcDateLabel(dateStr);
+                    }}
                     formatter={(value) => [Number(value).toFixed(2), "b-value"]}
                   />
                   <ReferenceLine y={0.5} stroke="#dc2626" strokeDasharray="4 2" label={{ value: "Critical (0.5)", position: "insideTopRight", fontSize: 10 }} />
@@ -93,7 +131,12 @@ export function SeismicAnalysis({
         </Card>
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="h6" gutterBottom>Seismic Energy Release</Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+              <Typography variant="h6">Seismic Energy Release</Typography>
+              <MuiTooltip title="Total energy released per time period in joules (log scale). Indicates magnitude and frequency of seismic activity.">
+                <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+              </MuiTooltip>
+            </Stack>
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <AreaChart data={energyData}>
@@ -102,7 +145,7 @@ export function SeismicAnalysis({
                   <YAxis label={{ value: "log₁₀(E) J", angle: -90, position: "insideLeft", fontSize: 11 }} />
                   <Tooltip
                     labelFormatter={bucket => xLabel(String(bucket))}
-                    formatter={(value) => [`10^${Number(value).toFixed(1)} J`, "Energy"]}
+                    formatter={(value) => [formatEnergy(Math.pow(10, Number(value) || 0)), "Energy"]}
                   />
                   <Area dataKey="logEnergy" stroke="#b45309" fill="#fbbf24" fillOpacity={0.35} name="log₁₀(E)" />
                 </AreaChart>
@@ -112,7 +155,12 @@ export function SeismicAnalysis({
         </Card>
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="h6" gutterBottom>Inter-Event Time Distribution</Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+              <Typography variant="h6">Inter-Event Time Distribution</Typography>
+              <MuiTooltip title="Distribution of time intervals between consecutive seismic events. Shows clustering patterns and temporal organization.">
+                <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+              </MuiTooltip>
+            </Stack>
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <BarChart data={interEventTimes}>

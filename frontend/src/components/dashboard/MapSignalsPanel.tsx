@@ -1,4 +1,5 @@
-import { Box, Card, CardContent, Chip, Stack, Tab, Tabs, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
+import { Box, Card, CardContent, Chip, Stack, Tab, Tabs, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 import type { AnomalyEvent, EarthquakeEvent, HeatmapCell, SeismicRiskCell } from "../../api/client";
 import { MapLibreView } from "../MapLibreView";
 import { AlertFeed } from "./AlertFeed";
@@ -52,7 +53,12 @@ export function MapSignalsPanel({
         <Card variant="outlined">
           <CardContent>
             <Stack direction={{ xs: "column", lg: "row" }} justifyContent="space-between" alignItems={{ lg: "center" }} spacing={1.25} sx={{ mb: 1 }}>
-              <Typography variant="h6">Live Epicentres</Typography>
+              <Stack direction="row" alignItems="center" spacing={0.5}>
+                <Typography variant="h6">Live Epicentres</Typography>
+                <Tooltip title="Real-time map of earthquake epicenters and signals with H3 spatial clustering and seismic risk forecast layers.">
+                  <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+                </Tooltip>
+              </Stack>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                 <ToggleButtonGroup size="small" value={activeLayers} onChange={onLayersChange} aria-label="map layers">
                   <ToggleButton value="event-hexes" aria-label="event hexagons">Event hexes</ToggleButton>
@@ -94,7 +100,12 @@ export function MapSignalsPanel({
         <Card variant="outlined" sx={{ flex: 1, display: "flex", flexDirection: "column" }}>
           <CardContent sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", "&:last-child": { pb: 2 } }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5, flexShrink: 0 }}>
-              <Typography variant="h6">Detected Signals</Typography>
+              <Stack direction="row" alignItems="center" spacing={0.5}>
+                <Typography variant="h6">Detected Signals</Typography>
+                <Tooltip title="Anomalous seismic signals detected by ML models. Click to filter by type or zoom to location.">
+                  <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
+                </Tooltip>
+              </Stack>
               {alertTypeFilter && (
                 <Chip size="small" label="Clear filter" onClick={() => onAlertTypeFilter("")} onDelete={() => onAlertTypeFilter("")} />
               )}

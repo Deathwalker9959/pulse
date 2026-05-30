@@ -1,9 +1,16 @@
-import { Card, CardContent, Stack, Typography } from "@mui/material";
+import { Card, CardContent, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
-export function MetricCard({ title, value, icon }: { title: string; value: string; icon: ReactNode }) {
-  return (
-    <Card variant="outlined">
+interface MetricCardProps {
+  title: string;
+  value: string;
+  icon: ReactNode;
+  tooltip?: string;
+}
+
+export function MetricCard({ title, value, icon, tooltip }: MetricCardProps) {
+  const content = (
+    <Card variant="outlined" sx={{ cursor: "default", pointerEvents: "none", height: "100%" }}>
       <CardContent>
         <Stack direction="row" alignItems="center" spacing={1}>
           {icon}
@@ -12,5 +19,15 @@ export function MetricCard({ title, value, icon }: { title: string; value: strin
         <Typography variant="h4" sx={{ mt: 1 }}>{value}</Typography>
       </CardContent>
     </Card>
+  );
+
+  return tooltip ? (
+    <Tooltip title={tooltip} placement="top">
+      <div style={{ pointerEvents: "auto" }}>
+        {content}
+      </div>
+    </Tooltip>
+  ) : (
+    content
   );
 }
