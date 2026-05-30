@@ -31,3 +31,10 @@ SETTINGS storage_policy = 'hot_cold';
 -- so history queries can fall back to the source event's time when needed).
 ALTER TABLE anomaly_events
     ADD COLUMN IF NOT EXISTS event_time DateTime DEFAULT toDateTime(0) AFTER detected_at;
+
+-- plate_name: enriched at ingest time from source event lat/lon.
+-- source_net: copied from source earthquake event for network filtering.
+ALTER TABLE anomaly_events ADD COLUMN IF NOT EXISTS plate_name LowCardinality(String) DEFAULT '';
+ALTER TABLE anomaly_events ADD COLUMN IF NOT EXISTS source_net LowCardinality(String) DEFAULT '';
+ALTER TABLE anomaly_events ADD INDEX IF NOT EXISTS idx_plate_name plate_name TYPE set(100) GRANULARITY 4;
+ALTER TABLE anomaly_events ADD INDEX IF NOT EXISTS idx_source_net source_net TYPE set(100) GRANULARITY 4;
