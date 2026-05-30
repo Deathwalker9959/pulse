@@ -11,6 +11,7 @@ import type {
   IngestionStatus,
   MagFrequencyBucket,
   NetworkRollup,
+  SeismicRiskCell,
   TimeseriesBucket,
   TopItem,
 } from "./client";
@@ -38,4 +39,6 @@ export const apiService = {
     get<BValueBucket[]>("/api/earthquakes/b-value-history", { from, to }),
   interEventTimes: (from: string, to: string) =>
     get<IETBucket[]>("/api/earthquakes/inter-event-times", { from, to }),
+  seismicRisk: (resolution = 2) =>
+    get<SeismicRiskCell[]>("/api/earthquakes/seismic-risk", { resolution: String(resolution) }),
 };

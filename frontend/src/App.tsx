@@ -140,11 +140,13 @@ export default function App() {
           events30Min={data.status.data?.events_30min ?? 0}
           signals24h={data.status.data?.anomaly_24h ?? 0}
           dataAgeSeconds={data.status.data?.data_age_seconds}
+          pollAgeSeconds={data.status.data?.poll_age_seconds}
         />
 
         <MapSignalsPanel
           events={filteredEvents}
           heatmapCells={heatmapCells}
+          riskCells={data.seismicRisk.data ?? []}
           alerts={alerts}
           filteredAlerts={filteredAlerts}
           isHeatmapMode={isHeatmapMode}

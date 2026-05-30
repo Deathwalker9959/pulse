@@ -1,11 +1,12 @@
 import { Box, Card, CardContent, Chip, Stack, Tab, Tabs, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
-import type { AnomalyEvent, EarthquakeEvent, HeatmapCell } from "../../api/client";
+import type { AnomalyEvent, EarthquakeEvent, HeatmapCell, SeismicRiskCell } from "../../api/client";
 import { MapLibreView } from "../MapLibreView";
 import { AlertFeed } from "./AlertFeed";
 
 interface MapSignalsPanelProps {
   events: EarthquakeEvent[];
   heatmapCells: HeatmapCell[];
+  riskCells: SeismicRiskCell[];
   alerts: AnomalyEvent[];
   filteredAlerts: AnomalyEvent[];
   isHeatmapMode: boolean;
@@ -27,6 +28,7 @@ interface MapSignalsPanelProps {
 export function MapSignalsPanel({
   events,
   heatmapCells,
+  riskCells,
   alerts,
   filteredAlerts,
   isHeatmapMode,
@@ -57,6 +59,7 @@ export function MapSignalsPanel({
                   <ToggleButton value="signal-hexes" aria-label="signal hexagons">Signal hexes</ToggleButton>
                   <ToggleButton value="event-nodes" aria-label="event nodes">Event nodes</ToggleButton>
                   <ToggleButton value="signal-nodes" aria-label="signal nodes">Signal nodes</ToggleButton>
+                  <ToggleButton value="risk-layer" aria-label="seismic risk forecast">Risk forecast</ToggleButton>
                 </ToggleButtonGroup>
                 <Tabs value={mapView} onChange={onMapViewChange} aria-label="map view">
                   <Tab value="globe" label="Globe" />
@@ -68,11 +71,13 @@ export function MapSignalsPanel({
               <MapLibreView
                 events={events}
                 heatmapCells={isHeatmapMode ? heatmapCells : undefined}
+                riskCells={riskCells}
                 alerts={filteredAlerts}
                 showEventHexes={activeLayers.includes("event-hexes")}
                 showSignalHexes={activeLayers.includes("signal-hexes")}
                 showEventNodes={activeLayers.includes("event-nodes")}
                 showSignalNodes={activeLayers.includes("signal-nodes")}
+                showRiskLayer={activeLayers.includes("risk-layer")}
                 anomalyHexResolution={heatmapResolution}
                 selectedEvent={selectedEvent}
                 focusLatLon={focusLatLon}

@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { websocketUrl } from "../api/apiClient";
 import { apiService } from "../api/service";
-import type { AnomalyEvent, BucketSize, EarthquakeEvent, RangePreset } from "../api/client";
+import type { AnomalyEvent, BucketSize, EarthquakeEvent, RangePreset, SeismicRiskCell } from "../api/client";
 import type { BValueBucket, EnergyBucket, IETBucket, MagFrequencyBucket } from "../api/client";
 import { useWebSocket } from "./useWebSocket";
 
@@ -67,7 +67,7 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     staleTime: from || to ? 30_000 : Infinity,
   });
   const alerts = useQuery({ queryKey: ["anomalies", "history", from, to], queryFn: () => apiService.anomalyHistory(from, to), staleTime: 0 });
-  const status = useQuery({ queryKey: ["ingestion", "status"], queryFn: apiService.ingestionStatus });
+  const status = useQuery({ queryKey: ["ingestion", "status"], queryFn: apiService.ingestionStatus, refetchInterval: 30_000 });
   const timeseries = useQuery({ queryKey: ["earthquakes", "timeseries", from, to, bucket], queryFn: () => apiService.timeseries(from, to, bucket) });
   const networks = useQuery({ queryKey: ["earthquakes", "top-networks", from, to], queryFn: () => apiService.topNetworks(from, to) });
   const places = useQuery({ queryKey: ["earthquakes", "top-places", from, to], queryFn: () => apiService.topPlaces(from, to) });
@@ -98,6 +98,13 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     queryFn: () => apiService.interEventTimes(from!, to!),
     enabled: !!from && !!to,
     staleTime: 120_000,
+  });
+
+  const seismicRisk = useQuery<SeismicRiskCell[]>({
+    queryKey: ["earthquakes", "seismic-risk"],
+    queryFn: () => apiService.seismicRisk(2),
+    staleTime: 120_000,
+    refetchInterval: 300_000,
   });
 
   const eventsConnected = useWebSocket(websocketUrl("/ws/events"), (data) => {
@@ -138,6 +145,7 @@ export function useDashboardData(from?: string, to?: string, net?: string, bucke
     bValueHistory,
     interEventTimes,
     eventsConnected,
-    alertsConnected
+    alertsConnected,
+    seismicRisk,
   };
 }

@@ -90,11 +90,24 @@ export interface IngestionStatus {
   has_live_data: boolean;
   last_ingested_at: string | null;
   data_age_seconds: number | null;
+  last_poll_at: string | null;
+  poll_age_seconds: number | null;
   events_30min: number;
   events_2min: number;
   anomaly_24h: number;
   active_anomaly_types: string[];
   poll_interval_seconds: number;
+}
+
+export interface SeismicRiskCell {
+  h3_index: string;
+  centroid_lat: number;
+  centroid_lon: number;
+  event_count: number;
+  event_rate_7d: number;
+  b_value: number | null;
+  max_magnitude: number;
+  risk_score: number;
 }
 
 export type RangePreset = "1h" | "6h" | "24h" | "7d" | "30d" | "ytd";
