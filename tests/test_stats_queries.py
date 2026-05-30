@@ -177,3 +177,46 @@ async def test_band_queries_fall_back_to_raw_for_sub_hour_window(monkeypatch) ->
     assert len(captured) == 2
     assert all("FROM earthquakes_raw FINAL" in sql for sql in captured)
     assert all("_mv_data" not in sql for sql in captured)
+
+
+class TrackingRedis:
+    """Cache fake that records hits and misses; stores values in memory."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+        self.hits = 0
+        self.misses = 0
+
+    async def get(self, key: str):
+        if key in self._store:
+            self.hits += 1
+            return self._store[key].encode()
+        self.misses += 1
+        return None
+
+    async def setex(self, key: str, ttl: int, value: str):
+        self._store[key] = value
+
+
+@pytest.mark.asyncio
+async def test_network_rollups_cached_on_second_call(monkeypatch) -> None:
+    """get_network_rollups is decorated with @cached; the second identical call is served from Redis."""
+    query_calls = 0
+
+    async def fake_query(sql: str, params: dict):
+        nonlocal query_calls
+        query_calls += 1
+        return [{"bucket": "2026-05-28T00:00:00", "net": "ci", "event_count": 42}]
+
+    monkeypatch.setattr(stats, "query", fake_query)
+    redis = TrackingRedis()
+    start = datetime(2026, 5, 28, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 29, tzinfo=timezone.utc)
+
+    result1 = await stats.get_network_rollups(redis=redis, bucket="1h", from_ts=start, to_ts=end, net="", limit=500)
+    result2 = await stats.get_network_rollups(redis=redis, bucket="1h", from_ts=start, to_ts=end, net="", limit=500)
+
+    assert query_calls == 1, "ClickHouse should be queried only once; second call served from cache"
+    assert result1 == result2
+    assert redis.hits == 1
+    assert redis.misses == 1

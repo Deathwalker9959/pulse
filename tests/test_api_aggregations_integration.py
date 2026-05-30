@@ -115,6 +115,7 @@ def test_every_http_route_responds(may_28_window: tuple[str, str, str, str, int]
         ("/api/earthquakes/rollups/network", {"from": start_api, "to": end_api, "bucket": "5m", "limit": "10000"}),
         ("/api/anomalies/history", {"from": start_api, "to": end_api, "limit": "100000"}),
         ("/api/ingestion/status", {}),
+        ("/api/earthquakes/seismic-risk", {"resolution": "2"}),
     ]
     for path, params in routes:
         payload = _api(path, params)
