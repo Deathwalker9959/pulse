@@ -226,9 +226,9 @@ async def get_depth_bands(*, redis, from_ts: datetime | None, to_ts: datetime | 
         lo, hi = split
         return await query("""
             SELECT depth_band, sum(c) AS event_count FROM (
-                SELECT depth_band, count() AS c
-                FROM earthquakes_raw FINAL
-                WHERE time >= {lo:DateTime} AND time < {hi:DateTime} AND depth_band != ''
+                SELECT depth_band, uniqExactMerge(event_count_state) AS c
+                FROM earthquakes_depth_band_mv_data
+                WHERE hour >= {lo:DateTime} AND hour < {hi:DateTime} AND depth_band != ''
                 GROUP BY depth_band
                 UNION ALL
                 SELECT depth_band, count() AS c
