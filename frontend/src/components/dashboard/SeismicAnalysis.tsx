@@ -24,20 +24,28 @@ import {
   YAxis,
 } from "recharts";
 import type {
+  BucketSize,
   BValueBucket,
   EnergyBucket,
   IETBucket,
   MagFrequencyBucket,
 } from "../../api/client";
-import { utcDateLabel } from "../../utils/dates";
 import { MC } from "./constants";
 
 interface SeismicAnalysisProps {
+  bucket: BucketSize;
   magnitudeFrequency: MagFrequencyBucket[];
   energyTimeseries: EnergyBucket[];
   bValueHistory: BValueBucket[];
   interEventTimes: IETBucket[];
   xLabel: (iso: string) => string;
+}
+
+function bvTruncKey(iso: string, bucket: BucketSize): string {
+  if (bucket === "1y") return iso.slice(0, 4);
+  if (bucket === "1mo") return iso.slice(0, 7);
+  if (bucket === "1d") return iso.slice(0, 10);
+  return iso.slice(0, 13); // 1h and finer: preserve hour
 }
 
 function formatEnergy(joules: number): string {
@@ -52,6 +60,7 @@ function formatEnergy(joules: number): string {
 }
 
 export function SeismicAnalysis({
+  bucket,
   magnitudeFrequency,
   energyTimeseries,
   bValueHistory,
@@ -91,13 +100,38 @@ export function SeismicAnalysis({
   const energyData = useMemo(
     () =>
       energyTimeseries
-        .filter((bucket) => bucket.energy_joules > 0)
-        .map((bucket) => ({
-          bucket: bucket.bucket,
-          logEnergy: Math.log10(bucket.energy_joules),
-        })),
+        .filter((b) => b.energy_joules > 0)
+        .map((b) => ({ bucket: b.bucket, logEnergy: Math.log10(b.energy_joules) })),
     [energyTimeseries],
   );
+
+  // Aggregate daily b-value buckets to the display granularity (e.g. monthly for YTD).
+  // Weighted average by sample_size avoids duplicate x-axis labels from Recharts tick selection.
+  const bValueData = useMemo(() => {
+    const byKey = new Map<
+      string,
+      { display: string; wSum: number; wTotal: number }
+    >();
+    for (const row of bValueHistory) {
+      const key = bvTruncKey(row.day, bucket);
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.wSum += row.b_value * row.sample_size;
+        existing.wTotal += row.sample_size;
+      } else {
+        byKey.set(key, {
+          display: xLabel(row.day),
+          wSum: row.b_value * row.sample_size,
+          wTotal: row.sample_size,
+        });
+      }
+    }
+    return Array.from(byKey.values()).map((v) => ({
+      day: v.display,
+      b_value: v.wTotal > 0 ? v.wSum / v.wTotal : 0,
+      sample_size: v.wTotal,
+    }));
+  }, [bValueHistory, bucket, xLabel]);
 
   return (
     <Box>
@@ -133,12 +167,22 @@ export function SeismicAnalysis({
                 <InfoIcon sx={{ fontSize: 20, opacity: 0.6, cursor: "help" }} />
               </MuiTooltip>
             </Stack>
+            {grPoints.length === 0 ? (
+              <Box sx={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Typography variant="body2" color="text.secondary">
+                  Not enough events — select a wider time range
+                </Typography>
+              </Box>
+            ) : (
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
                 <LineChart data={grPoints}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis
                     dataKey="mag"
+                    type="number"
+                    domain={["dataMin", "dataMax"]}
+                    tickFormatter={(v) => Number(v).toFixed(1)}
                     label={{
                       value: "Magnitude",
                       position: "insideBottom",
@@ -147,6 +191,9 @@ export function SeismicAnalysis({
                     }}
                   />
                   <YAxis
+                    domain={[0, "auto"]}
+                    allowDecimals
+                    tickFormatter={(v) => Number(v).toFixed(1)}
                     label={{
                       value: "log₁₀(N≥M)",
                       angle: -90,
@@ -169,6 +216,7 @@ export function SeismicAnalysis({
                 </LineChart>
               </ResponsiveContainer>
             </Box>
+            )}
           </CardContent>
         </Card>
         <Card variant="outlined">
@@ -186,29 +234,23 @@ export function SeismicAnalysis({
             </Stack>
             {bValueHistory.length > 0 && bValueHistory.length < 10 && (
               <Alert severity="warning" sx={{ mb: 1, py: 0, fontSize: 12 }}>
-                Sparse data — only {bValueHistory.length} qualifying day
+                Sparse data — only {bValueHistory.length} qualifying bucket
                 {bValueHistory.length !== 1 ? "s" : ""}. B-values unreliable (Mc
                 may not match filter subset).
               </Alert>
             )}
+            {bValueData.length === 0 ? (
+              <Box sx={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Typography variant="body2" color="text.secondary">
+                  Not enough events — select a wider time range
+                </Typography>
+              </Box>
+            ) : (
             <Box sx={{ height: 260 }}>
               <ResponsiveContainer>
-                <LineChart data={bValueHistory}>
+                <LineChart data={bValueData}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="day"
-                    tickFormatter={(day) => {
-                      const dateStr = String(day);
-                      const match = dateStr.match(
-                        /(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/,
-                      );
-                      if (match) {
-                        const [, , month, date, hour] = match;
-                        return `${month}-${date} ${hour}:00`;
-                      }
-                      return utcDateLabel(dateStr);
-                    }}
-                  />
+                  <XAxis dataKey="day" />
                   <YAxis
                     domain={[0, 2.5]}
                     allowDecimals
@@ -220,17 +262,6 @@ export function SeismicAnalysis({
                     }}
                   />
                   <Tooltip
-                    labelFormatter={(day) => {
-                      const dateStr = String(day);
-                      const match = dateStr.match(
-                        /(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/,
-                      );
-                      if (match) {
-                        const [, year, month, date, hour, min] = match;
-                        return `${year}-${month}-${date} ${hour}:${min}`;
-                      }
-                      return utcDateLabel(dateStr);
-                    }}
                     formatter={(value) => [Number(value).toFixed(2), "b-value"]}
                   />
                   <ReferenceLine
@@ -263,6 +294,7 @@ export function SeismicAnalysis({
                 </LineChart>
               </ResponsiveContainer>
             </Box>
+            )}
           </CardContent>
         </Card>
         <Card variant="outlined">

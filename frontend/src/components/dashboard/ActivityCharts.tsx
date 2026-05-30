@@ -32,39 +32,48 @@ interface ActivityChartsProps {
   xLabel: (iso: string) => string;
 }
 
+function isoTruncKey(iso: string, bucket: BucketSize): string {
+  // Deterministic grouping key — truncate ISO to bucket granularity (UTC).
+  // Using locale-formatted strings as Map keys risks Intl variation (NBSP, etc.).
+  if (bucket === "1y") return iso.slice(0, 4);
+  if (bucket === "1mo") return iso.slice(0, 7);
+  if (bucket === "1d") return iso.slice(0, 10);
+  return iso.slice(0, 13); // 6h, 1h, 15m, 5m: preserve hour
+}
+
 export function ActivityCharts({
   bucket,
   timeseries,
   rollups,
   xLabel,
 }: ActivityChartsProps) {
-  // Group by time bucket, summing event_count across all networks (or the single filtered net)
   const rollupData = useMemo(() => {
     const byTime = new Map<
       string,
-      { events: number; magnitude: number; count: number }
+      { display: string; events: number; magnitude: number; count: number }
     >();
     for (const item of rollups) {
-      const t = xLabel(item.bucket);
-      const existing = byTime.get(t);
+      const key = isoTruncKey(item.bucket, bucket);
+      const existing = byTime.get(key);
       if (existing) {
         existing.events += item.event_count;
         existing.magnitude += item.avg_magnitude;
         existing.count += 1;
       } else {
-        byTime.set(t, {
+        byTime.set(key, {
+          display: xLabel(item.bucket),
           events: item.event_count,
           magnitude: item.avg_magnitude,
           count: 1,
         });
       }
     }
-    return Array.from(byTime.entries()).map(([time, v]) => ({
-      time,
+    return Array.from(byTime.values()).map((v) => ({
+      time: v.display,
       events: v.events,
       magnitude: Number((v.magnitude / v.count).toFixed(2)),
     }));
-  }, [rollups, xLabel]);
+  }, [rollups, xLabel, bucket]);
 
   return (
     <Box

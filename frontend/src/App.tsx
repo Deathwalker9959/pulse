@@ -217,6 +217,7 @@ export default function App() {
         />
 
         <SeismicAnalysis
+          bucket={bucket}
           magnitudeFrequency={data.magnitudeFrequency.data ?? []}
           energyTimeseries={data.energyTimeseries.data ?? []}
           bValueHistory={data.bValueHistory.data ?? []}
