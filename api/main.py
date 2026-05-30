@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -22,13 +23,11 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the WebSocket broadcasters on boot; stop them and close Redis/ClickHouse on shutdown."""
-    await event_broadcaster.start()
-    await alert_broadcaster.start()
+    await asyncio.gather(event_broadcaster.start(), alert_broadcaster.start())
     try:
         yield
     finally:
-        await event_broadcaster.stop()
-        await alert_broadcaster.stop()
+        await asyncio.gather(event_broadcaster.stop(), alert_broadcaster.stop())
         await close_redis()
         await close_client()
 
@@ -51,4 +50,3 @@ app.include_router(ingestion_router)
 async def health() -> dict[str, str]:
     """Liveness probe: always returns {"status": "ok"} if the process is serving."""
     return {"status": "ok"}
-

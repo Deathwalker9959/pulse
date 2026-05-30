@@ -346,15 +346,19 @@ async def _foreshock_sequence(events: list[EarthquakeEvent], redis) -> list[Anom
             regions_updated.add(gh3)
         await pipe.execute()
 
-    anomalies: list[AnomalyEvent] = []
-    for gh3 in regions_updated:
+    async def read_region(gh3: str):
         key = f"{FORESHOCK_PREFIX}{gh3}"
         async with redis.pipeline(transaction=False) as pipe:
             pipe.zremrangebyscore(key, "-inf", h72_ago)
             pipe.zrangebyscore(key, h24_ago, "+inf")
             pipe.zrangebyscore(key, h72_ago, h24_ago)
             _, recent_raw, prior_raw = await pipe.execute()
+        return recent_raw, prior_raw
 
+    anomalies: list[AnomalyEvent] = []
+    regions = list(regions_updated)
+    region_reads = await asyncio.gather(*(read_region(gh3) for gh3 in regions))
+    for gh3, (recent_raw, prior_raw) in zip(regions, region_reads):
         if len(recent_raw) < FORESHOCK_MIN_RECENT or not prior_raw:
             continue
 

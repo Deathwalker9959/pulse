@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -333,27 +334,29 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
 
 async def get_ingestion_status() -> dict:
     """Pipeline health snapshot: data freshness, recent event/anomaly counts, and poll interval."""
-    rows = await query("""
-        SELECT
-            max(ingested_at) AS last_ingested_at,
-            countIf(time >= now() - INTERVAL 30 MINUTE) AS events_30min,
-            countIf(ingested_at >= now() - INTERVAL 2 MINUTE) AS events_2min
-        FROM earthquakes_raw FINAL
-    """)
-    anomaly_rows = await query("""
-        SELECT count() AS anomaly_24h
-        FROM (
-            SELECT source_event_id, anomaly_type
+    rows, anomaly_rows, type_rows = await asyncio.gather(
+        query("""
+            SELECT
+                max(ingested_at) AS last_ingested_at,
+                countIf(time >= now() - INTERVAL 30 MINUTE) AS events_30min,
+                countIf(ingested_at >= now() - INTERVAL 2 MINUTE) AS events_2min
+            FROM earthquakes_raw FINAL
+        """),
+        query("""
+            SELECT count() AS anomaly_24h
+            FROM (
+                SELECT source_event_id, anomaly_type
+                FROM anomaly_events
+                WHERE event_time >= now() - INTERVAL 24 HOUR
+                GROUP BY source_event_id, anomaly_type
+            )
+        """),
+        query("""
+            SELECT DISTINCT anomaly_type
             FROM anomaly_events
-            WHERE event_time >= now() - INTERVAL 24 HOUR
-            GROUP BY source_event_id, anomaly_type
-        )
-    """)
-    type_rows = await query("""
-        SELECT DISTINCT anomaly_type
-        FROM anomaly_events
-        WHERE event_time >= now() - INTERVAL 1 HOUR
-    """)
+            WHERE event_time >= now() - INTERVAL 1 HOUR
+        """),
+    )
     row = rows[0] if rows else {}
     last_at = row.get("last_ingested_at")
     age_seconds = None
