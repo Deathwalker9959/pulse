@@ -2,89 +2,150 @@
 
 ## System Overview
 
-PULSE is a real-time flight intelligence platform built around a single data source (OpenSky Network) and a deliberately simple pipeline:
+PULSE is a real-time earthquake intelligence platform. It ingests the USGS global seismic feed, detects anomalies, persists events to a columnar store, and surfaces live analytics through a REST API and WebSocket dashboard.
 
 ```
-OpenSky REST API (10s cadence)
+USGS GeoJSON feed (60 s cadence)
          │
          ▼
   [ingestion service]
-   ├─ normalise FlightState
-   ├─ XADD → Redis Stream: pulse:flights   (raw states, transit buffer)
-   ├─ batch INSERT → ClickHouse: flights_raw
-   ├─ anomaly detection per batch
-   │   ├─ XADD → pulse:anomalies (pre-enrichment)
-   │   ├─ INSERT → ClickHouse: anomaly_events
-   │   ├─ enrich with Open-Meteo weather (async, best-effort)
-   │   └─ XADD → pulse:alerts (enriched payload)
+   ├─ fetch & parse EarthquakeEvent (httpx async, retry/backoff)
+   ├─ SETEX pulse:last-poll-at  → Redis (pipeline health heartbeat)
+   ├─ dedup via Redis hash (pulse:seen-events, 7-day TTL)
+   ├─ XADD → pulse:events stream   (raw events, transit buffer)
+   ├─ batch INSERT → ClickHouse: earthquakes_raw
+   ├─ 13 anomaly detectors in parallel (asyncio.gather)
+   │   ├─ 7 live detectors (Redis-backed rolling state)
+   │   └─ 6 stateless / per-batch detectors
+   ├─ INSERT → ClickHouse: anomaly_events
+   └─ XADD → pulse:alerts stream   (detected anomalies)
          │
          ▼
-   [api service]
-   ├─ XREADGROUP pulse:alerts → WebSocket fan-out (AlertManager)
-   ├─ REST GET /api/flights/live → ClickHouse (Redis-cached, TTL 10s)
-   ├─ REST GET /api/stats/* → ClickHouse hourly MV (Redis-cached, TTL 30-60s)
-   └─ WS  /ws/alerts → connected dashboard clients
+  [api service]
+   ├─ XREAD pulse:events / pulse:alerts → WebSocket fan-out
+   ├─ GET /api/earthquakes/*  → ClickHouse (Redis TTL cache 10–120 s)
+   ├─ GET /api/anomalies/*    → ClickHouse (Redis TTL cache 10 s)
+   ├─ GET /api/earthquakes/seismic-risk → ClickHouse (cached 120 s)
+   ├─ GET /api/ingestion/status → ClickHouse + Redis (uncached)
+   └─ WS /ws/events, /ws/alerts → connected dashboard clients
          │
          ▼
-   [frontend]
-   ├─ TanStack Query polls REST endpoints (10-60s intervals)
-   └─ useAlerts hook maintains WebSocket connection (auto-reconnect)
+  [frontend — React 19 + MapLibre GL]
+   ├─ TanStack Query polls REST endpoints (staleTime 30–120 s)
+   ├─ useWebSocket maintains two WS connections (auto-reconnect)
+   └─ MapLibreView renders epicentres, anomaly hexes, seismic risk spikes
 ```
 
 ---
 
 ## Design Decisions
 
-### 1. Data source: OpenSky Network
+### 1. Data source: USGS Earthquake Hazards Program
 
-OpenSky provides live ADS-B aircraft positions via a free public REST API (`/api/states/all`). No WebSocket stream is available from OpenSky itself — the polling model is intentional and rate-limited to 1 request per 10 seconds for anonymous callers. The ingestion layer adds resilience (retry, backoff, dedup) so the downstream pipeline is unaffected by transient failures.
+USGS provides global earthquake data via GeoJSON REST feeds updated continuously. The `all_hour` summary (~100 events, last hour) is polled every 60 seconds. An optional secondary feed (`USGS_SECONDARY_FEED_URL`) can be configured for concurrent fetching — both are merged with `asyncio.gather` and deduplicated by `(event_id, updated)` timestamp before writing.
+
+The ingestion poller writes a `pulse:last-poll-at` heartbeat key to Redis (TTL 300 s) after every successful fetch, whether or not new events were found. This lets the API distinguish "quiet seismic period" from "pipeline down" in the ingestion status endpoint.
 
 ### 2. Redis Streams over Pub/Sub
 
-Pub/Sub would lose messages if any consumer is down at the moment of publish. Redis Streams persist messages until explicitly acknowledged or trimmed. This guarantees that a restarting API service can replay recent alerts without loss — a hard requirement given "resilient ingestion" is evaluated.
+Pub/Sub loses messages if any consumer is down at the moment of publish. Streams persist messages until trimmed. This guarantees that a restarting API service can replay recent events without loss.
 
-Consumer groups (`api-workers`) give at-most-once delivery per group member across multiple API instances, with ACK-based tracking. Pub/Sub cannot do this.
-
-Trade-off: messages accumulate if consumers lag. Mitigated by `MAXLEN ~N` approximate trimming. ClickHouse is the durable store; streams are transit infrastructure only.
+`MAXLEN ~N` approximate trimming keeps memory bounded (`pulse:events` capped at 50 000, `pulse:alerts` at 10 000). ClickHouse is the durable store; streams are transit infrastructure only.
 
 ### 3. ClickHouse table engines
 
-**`flights_raw` — `ReplacingMergeTree(last_contact)`**
+**`earthquakes_raw` — `ReplacingMergeTree(updated)`**
 
-OpenSky returns the same aircraft in successive polls. Rather than explicit dedup in application code, `ReplacingMergeTree` keeps the row with the highest `last_contact` per `(icao24, time_position)` during background merges. This is async — reads may see duplicates until a merge occurs. Queries that need exact counts use the `FINAL` modifier; dashboard queries omit it for performance.
+USGS revises events continuously (new stations, recalculated magnitudes). `ReplacingMergeTree` keeps the row with the highest `updated` timestamp per `(time, event_id)` during background merges. Reads that need exact counts use `FINAL`; dashboard queries use the rollup materialized views to avoid the merge cost.
 
-**`flights_hourly_mv_data` — `SummingMergeTree`**
+**`earthquakes_hourly_mv_data` / `earthquakes_mag_band_mv_data` / `earthquakes_depth_band_mv_data` / `earthquakes_rollup_net_5m` — `AggregatingMergeTree`**
 
-Materialized view maintained incrementally at insert time. Dashboard hourly queries hit the MV (microseconds) rather than scanning `flights_raw` (seconds). Read queries use `sum(flight_count)` not `count(*)` to handle unmerged parts correctly.
+Materialized views maintained incrementally at insert time using `-State` combinators (`uniqExactState`, `sumState`, `countState`). Dashboard queries re-aggregate with `-Merge` combinators, hitting microsecond-latency rollup tables rather than scanning the raw fact table. A hybrid pattern (`_aligned_split`) serves whole-bucket queries from the rollup and partial edge buckets from the raw table, guaranteeing exactness for any window.
 
 **`anomaly_events` — `MergeTree`**
 
-Low-volume table (~100s of rows per day). No dedup requirement. 30-day TTL. Standard MergeTree is appropriate.
+Low-volume (~100s of rows per day). Deterministic `anomaly_id = SHA256(event_id + anomaly_type)[:36]` makes inserts idempotent. 30-day TTL.
 
-### 4. `LowCardinality` column types
+### 4. LowCardinality column types
 
-`origin_country`, `squawk`, `anomaly_type`, `severity` all have bounded, low cardinality (< 1000 unique values). ClickHouse dictionary-encodes these columns, reducing storage ~10x and accelerating GROUP BY / WHERE operations. No application-level change required.
+`net`, `mag_type`, `event_type`, `status`, `alert`, `mag_band`, `depth_band`, `geohash` all have < 1 000 distinct values. ClickHouse dictionary-encodes these, reducing storage ~10× and accelerating GROUP BY / WHERE filters. Pre-computed `mag_band` and `depth_band` columns on the raw table turn expensive `CASE WHEN magnitude BETWEEN …` expressions into equality predicates.
 
-### 5. Redis TTL cache (not event-driven invalidation)
+### 5. Redis cache — keying and invalidation
 
-Cache keys are `pulse:v1:{endpoint}:{sha256(params)}` with TTLs calibrated to endpoint volatility:
-- `/flights/live`: 10s — data refreshes every poll cycle
-- `/stats/top-n`: 30s — changes slowly
-- `/stats/hourly`: 60s — MV aggregates lag by ~1 poll cycle anyway
+Cache keys: `pulse:v1:{endpoint}:{sha256(sorted_params)[:20]}`
 
-Event-driven invalidation (clearing cache on write) would require tight coupling between ingestion and API services. TTL is simpler, correct enough for this use case, and survives service restarts without stale cache.
+TTLs calibrated to endpoint volatility:
+- `/earthquakes/live`, `/anomalies/history`: 10 s — direct event view, must refresh quickly
+- `/timeseries`, `/top-networks`, `/top-places`, `/density`, `/rollups/network`: 30 s
+- `/magnitude-bands`, `/depth-bands`, `/energy-timeseries`, `/heatmap`: 60 s
+- `/magnitude-frequency`, `/b-value-history`, `/inter-event-times`, `/seismic-risk`: 120 s
 
-### 6. No Kafka / message queue
+**Active invalidation for freshness-critical endpoints**: after each ingestion cycle that writes new events, the ingestion service performs a Redis SCAN+DEL over `pulse:v1:earthquakes:live:*`, `pulse:v1:stats:timeseries:*`, and `pulse:v1:anomalies:history:*`. This ensures the live feed and timeseries reflect new data within seconds, not after a TTL timeout. Slowly-moving aggregates (bands, b-value, risk) are correctly left to TTL-only expiry.
 
-At OpenSky's 10s poll cadence (~5k–10k aircraft per batch), direct write to ClickHouse is ~50ms and well within tolerance. Kafka's operational overhead (ZooKeeper or KRaft, topic management, partition rebalancing) is unjustified at this volume. Redis Streams provide the same ordering and consumer-group guarantees for this workload. Kafka becomes warranted at ~10k events/second sustained throughput.
+`allkeys-lru` eviction policy with a 512 MB cap — correct for a pure-cache workload where no key needs explicit retention.
 
-### 7. Extension: Automatic Weather Contextualization
+### 6. Anomaly detection — 13 detectors
 
-When an anomaly fires, the system automatically fetches weather from Open-Meteo (free, no auth, ~100ms) for the anomaly's lat/lon. The enriched alert is stored in ClickHouse and pushed to the dashboard. This derives information neither dataset provides alone: OpenSky can tell you *that* flights are deviating; Open-Meteo can tell you *why*.
+Seven live detectors maintain rolling state in Redis (z-score windows, geohash-keyed sorted sets) and run in parallel via `asyncio.gather` each poll cycle:
 
-The enrichment is async and best-effort. Alerts reach the dashboard immediately (pre-enrichment), then the ClickHouse row is updated when weather resolves. Frontend can refetch the full anomaly detail on click to get the latest weather context.
+| Detector | Signal | Redis key type |
+|---|---|---|
+| MAGNITUDE_SPIKE | z-score > 2.5 vs 12-batch window | List (LPUSH/LTRIM) |
+| ENERGY_BURST | cumulative energy z-score | List |
+| SWARM_DETECTION | per-geohash-5 event count z-score | List per cell |
+| AFTERSHOCK_CASCADE | M<5.5 near recent M≥5.5 mainshocks | Hash (48 h TTL) |
+| GLOBAL_RATE_SPIKE / SEISMIC_QUIESCENCE | event rate z-score | List |
+| DEEP_FOCUS_CLUSTER | 3+ events >300 km deep per geohash-3 | Counter (24 h TTL) |
+| FORESHOCK_SEQUENCE | frequency acceleration + magnitude escalation | Sorted set (72 h) |
 
-Weather per-grid caching (1° cell, 15-min TTL) is a planned optimization — currently each anomaly triggers a fresh fetch. At low anomaly rates this is fine.
+Six stateless detectors run per-batch with no Redis state: SIGNIFICANT_EVENT, TSUNAMI_ALERT, TSUNAMI_RISK, B_VALUE_ANOMALY, DATA_QUALITY_ANOMALY, and their historical variants for backfill.
+
+Historical backfill runs daily as a separate concurrent worker, re-running stateless anomaly detectors over month-by-month USGS ComCat data with a pipelined prefetch (month N+1 fetches while month N inserts).
+
+### 7. No Kafka / message queue
+
+At 60 s poll cadence, direct ClickHouse writes are ~50 ms — well within tolerance. Kafka's operational overhead is unjustified. Redis Streams provide the same ordering and consumer-group guarantees for this workload.
+
+---
+
+## Extension: Seismic Risk Forecast
+
+### Motivation
+
+The existing anomaly detectors are reactive: they fire when something unusual has already happened. The seismic risk layer adds a *prospective* view — a spatial probability surface showing where elevated risk exists based on recent seismicity patterns, independent of whether an anomaly has fired.
+
+### Method
+
+The endpoint `GET /api/earthquakes/seismic-risk` aggregates the last 30 days of seismicity into H3 cells (resolution 2, ~500 km edge by default) and computes a risk score (0–1) per cell from three signals:
+
+**1. Normalised 7-day event rate**
+Short-term seismicity rate is a first-order hazard proxy. The rate is normalised across all active cells so the score reflects *relative* elevation rather than an absolute count, making it robust across global baselines.
+
+**2. Gutenberg-Richter b-value anomaly**
+The GR relation log₁₀(N) = a − b·M describes how frequently earthquakes of different magnitudes occur. Globally b ≈ 1.0. A locally low b-value (< 0.8) means the magnitude distribution skews towards larger events — a pattern observed before some major sequences. The b-value is estimated by maximum likelihood: `b = log₁₀(e) / (mean_M − Mc)` where Mc = 2.5 (the USGS global completeness threshold). Cells with fewer than 5 qualifying events default to neutral b = 1.0.
+
+**3. Large-event boost (Omori-Utsu aftershock elevation)**
+Any M≥6.0 within the last 30 days adds up to +0.3 to the raw score. This reflects the Omori-Utsu law: aftershock rates decay as 1/(t+c)^p, so a recent large event implies elevated near-term hazard.
+
+**Score composition:**
+```
+raw  = (events_7d / max_events_7d) × (1 / max(b_value, 0.3)) + large_event_boost
+risk = min(1.0, raw)
+```
+
+### Visualisation
+
+The risk layer renders as translucent H3 hex cells on the map:
+- Green (< 0.2) → low
+- Yellow-orange (0.2–0.4) → low-moderate
+- Orange (0.4–0.7) → moderate
+- Red (≥ 0.7) → elevated
+
+Clicking a cell shows a popup with the risk score, b-value, 30-day max magnitude, and event count. The layer is toggled independently of the event and anomaly layers.
+
+### Caveats
+
+This is a statistical pattern score, not a deterministic earthquake prediction. It captures where recent activity makes elevated risk plausible given known seismological relationships — useful for situational awareness and directing attention, not for civil-engineering decisions.
 
 ---
 
@@ -92,33 +153,40 @@ Weather per-grid caching (1° cell, 15-min TTL) is a planned optimization — cu
 
 | Limitation | Correct approach with more time |
 |---|---|
-| `FINAL` queries on `flights_raw` are slow at high row counts | Replace with `flights_latest` table (AggregatingMergeTree, keyed by icao24) populated by a MV — O(1) live lookups |
-| Single Redis instance is a SPOF | Redis Sentinel or Redis Cluster for HA |
-| Per-process `rate_limit` state doesn't coordinate across multiple ingestion workers | Move rate-limit state to Redis INCR+TTL |
-| Weather fetch per anomaly (no dedup by grid cell) | Cache weather by 1° cell with 15-min TTL in Redis |
-| No auth on API endpoints | Add OAuth2/JWT, scope read-only for dashboard |
-| OpenSky anonymous rate limit (10s/req) caps throughput | Authenticated OpenSky credentials (free registration) or ADS-B Exchange for higher throughput |
-| No write-ahead log in ingestion | If the process crashes between `xadd` and `insert`, a batch may be lost. Tolerable for flight tracking; not for financial data |
+| `FINAL` on `earthquakes_raw` is slow at high row counts | Replace with a `earthquakes_latest` AggregatingMergeTree MV (O(1) live lookups) |
+| Single Redis instance is a SPOF | Redis Sentinel or Cluster for HA |
+| Risk score uses raw counts without magnitude-of-completeness correction | Fit Mc locally per cell using the maximum-curvature method before b-value estimation |
+| b-value estimator assumes linear GR above Mc=2.5 globally | Local Mc fitting per cell produces more accurate b-values in low-seismicity regions |
+| No API authentication | Add OAuth2/JWT, scope read-only for dashboard |
+| Top-places rollup MV only populated from new inserts | Historical rows populate on next ingestion cycle; a backfill via OPTIMIZE TABLE would be needed for immediate accuracy after first deploy |
 
 ---
 
 ## Expected Failure Points at Scale
 
-1. **ClickHouse write throughput**: At 10x volume (100k aircraft), the 10s insert batch grows to ~100k rows. ClickHouse handles this comfortably (designed for 100k+ inserts/s). The bottleneck shifts to the `FINAL` modifier on live queries — see above.
+The following components become bottlenecks at 10× current volume (~100k events/day) and are the expected first points of failure:
 
-2. **Redis Streams memory**: At sustained high volume with a slow consumer, stream length grows unboundedly. `MAXLEN ~50000` trims approximate. Monitor `XLEN pulse:flights`; reduce maxlen or add consumers if lag grows.
+**1. `FINAL` modifier on `earthquakes_raw`**
+At ~4M rows (400-day retention at current volume), `FINAL` scans and deduplicates the full partition range. At 10× volume this becomes seconds-per-query. Fix: materialise a `earthquakes_latest` AggregatingMergeTree keyed by `event_id` that holds only the most recent row per event — O(1) point lookups without `FINAL`.
 
-3. **WebSocket fan-out**: At 10k concurrent dashboard users, broadcasting from a single goroutine-equivalent asyncio task becomes a bottleneck. Add a dedicated broadcast worker per API instance, or use Redis Pub/Sub for intra-instance fan-out from a single Streams consumer.
+**2. Redis Streams memory**
+`pulse:events` is capped at 50k entries with approximate trimming. At 10× event rate the stream fills and trims faster, potentially dropping messages before slow WebSocket consumers read them. Fix: monitor `XLEN pulse:events`; reduce maxlen if lag grows, or add a dedicated consumer group per API instance.
 
-4. **Open-Meteo API**: Free tier has undocumented rate limits. At high anomaly rates, weather fetches will start failing. The fallback (publish anomaly without weather) is implemented; add grid-cell caching to reduce calls.
+**3. WebSocket fan-out**
+The `StreamBroadcaster` fans out to all connections from a single asyncio task. At ~1k concurrent dashboard users, this task monopolises the event loop. Fix: move broadcast to a dedicated worker thread, or use Redis Pub/Sub for intra-instance fan-out and one Streams consumer per API instance.
+
+**4. Single-process anomaly detection**
+The 13 anomaly detectors run inline in the ingestion loop. At 10× event rate, the detection window grows and Redis round-trips pile up. Fix: offload detection to a separate async worker consuming from `pulse:events` rather than running synchronously in the poll cycle.
+
+**5. ClickHouse materialized view fan-out**
+Each insert to `earthquakes_raw` triggers 5 MV inserts (hourly-net, hourly-places, mag-band, depth-band, 5m-net). At very high insert rates this creates write amplification. Fix: batch inserts into larger blocks (currently per-poll-cycle) and monitor part merges with `system.parts`.
 
 ---
 
 ## Planned Next Steps
 
-- ClickHouse `flights_latest` table for O(1) live queries
-- Authenticated OpenSky credentials (free registration)
-- Weather fetch deduplication by 1° grid cell (Redis cache)
+- `earthquakes_latest` AggregatingMergeTree for O(1) live lookups replacing `FINAL`
+- Magnitude-of-completeness correction in the seismic risk forecast
+- Prometheus `/metrics` endpoint on API and ingestion services
 - API authentication (read-only JWT)
-- Prometheus metrics endpoint (`/metrics`) on API and ingestion
-- E2E test: `docker compose up`, assert data flows within 60s
+- E2E test: `docker compose up --build`, assert data flows end-to-end within 60 s
