@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from cache import get_redis
 from controllers.alerts import get_anomaly_history
+from controllers.forecast import get_seismic_risk
 from controllers.earthquakes import (
     get_b_value_history,
     get_energy_timeseries,
@@ -206,6 +207,15 @@ async def anomaly_history(
 ) -> list[dict]:
     """GET /api/anomalies/history — recent deduped anomalies, optionally time-filtered."""
     return await get_anomaly_history(redis=redis, limit=limit, from_ts=from_ts, to_ts=to_ts)
+
+
+@earthquake_router.get("/seismic-risk")
+async def seismic_risk(
+    resolution: Annotated[int, Query(ge=1, le=3)] = 2,
+    redis=Depends(get_redis),
+) -> list[dict]:
+    """GET /api/earthquakes/seismic-risk — probabilistic risk score per H3 cell from last 30 days."""
+    return await get_seismic_risk(redis=redis, resolution=resolution)
 
 
 @ingestion_router.get("/status")
