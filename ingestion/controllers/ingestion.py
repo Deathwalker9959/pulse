@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
 import httpx
 import redis.asyncio as aioredis
@@ -56,6 +57,27 @@ async def _publish(
     await pipe.execute()
 
 
+async def _invalidate_live_caches(redis: aioredis.Redis) -> None:
+    """Delete freshness-critical API cache keys so the next request reflects the just-written events.
+
+    Only `live`, `timeseries`, and `anomalies:history` are invalidated — slowly-changing
+    aggregates (bands, b-value, magnitude-frequency, etc.) use TTL-only expiry since their
+    data changes at a rate where the TTL window is acceptable.
+    """
+    for pattern in (
+        "pulse:v1:earthquakes:live:*",
+        "pulse:v1:stats:timeseries:*",
+        "pulse:v1:anomalies:history:*",
+    ):
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=pattern, count=200)
+            if keys:
+                await redis.delete(*keys)
+            if cursor == 0:
+                break
+
+
 async def run() -> None:
     """Main ingestion loop: poll USGS, dedup, then publish + persist events and detected anomalies forever."""
     redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=False)
@@ -66,6 +88,7 @@ async def run() -> None:
         while True:
             try:
                 fetched = await fetch_events(http)
+                await redis.setex("pulse:last-poll-at", 300, datetime.now(timezone.utc).isoformat())
                 events = await _new_or_revised(redis, fetched)
                 if events:
                     earthquake_task = asyncio.gather(
@@ -82,6 +105,7 @@ async def run() -> None:
                         await asyncio.gather(earthquake_task, return_exceptions=True)
                         raise
                     await earthquake_task
+                    await _invalidate_live_caches(redis)
                     await asyncio.gather(
                         write_anomalies(clickhouse, anomalies),
                         _publish(redis, STREAM_ALERTS, anomalies, maxlen=10_000),

@@ -112,6 +112,7 @@ services:
       CLICKHOUSE_USER: "${CLICKHOUSE_USER:-default}"
       CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-}"
       USGS_FEED_URL: "${USGS_FEED_URL:-https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson}"
+      USGS_SECONDARY_FEED_URL: "${USGS_SECONDARY_FEED_URL:-https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson}"
       USGS_POLL_INTERVAL: "${USGS_POLL_INTERVAL:-60}"
     depends_on:
       redis:
