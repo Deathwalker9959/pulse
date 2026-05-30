@@ -8,7 +8,7 @@ from db import query
 
 
 @cached(ttl=120, key_prefix="forecast:risk")
-async def get_seismic_risk(*, redis, resolution: int = 2) -> list[dict]:
+async def get_seismic_risk(*, redis, resolution: int = 2, plate: str = "", net: str = "") -> list[dict]:
     """Probabilistic seismic risk per H3 cell derived from the last 30 days of seismicity.
 
     Risk score (0–1) is a composite of three Gutenberg-Richter-grounded signals:
@@ -32,6 +32,8 @@ async def get_seismic_risk(*, redis, resolution: int = 2) -> list[dict]:
     # Resolution is fixed at 2 (~500 km cells) so every cell has enough events for a
     # meaningful b-value estimate. If a caller passes a different resolution, fall back.
     h3_expr = "h3r2" if resolution == 2 else f"lower(hex(geoToH3(longitude, latitude, {resolution})))"
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
     rows = await query(f"""
         SELECT
             {h3_expr} AS h3_index,
@@ -45,12 +47,12 @@ async def get_seismic_risk(*, redis, resolution: int = 2) -> list[dict]:
             countIf(magnitude >= 2.5) AS count_25
         FROM earthquakes_raw FINAL
         WHERE time >= {{t30:DateTime}}
-          AND magnitude >= 2.0
+          AND magnitude >= 2.0 {plate_clause} {net_clause}
         GROUP BY h3_index
         HAVING event_count >= 3
         ORDER BY event_count DESC
         LIMIT 2000
-    """, {"t30": t30, "t7": t7})
+    """, {"t30": t30, "t7": t7, "plate": plate, "net": net})
 
     # Normalise event rate across all cells for relative comparison.
     max_rate = max((r["events_7d"] for r in rows), default=1) or 1

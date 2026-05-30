@@ -80,17 +80,17 @@ def _bucket_expr(bucket: str, column: str = "time") -> str:
 
 
 @cached(ttl=30, key_prefix="stats:topn")
-async def get_top_n(*, redis, field: Literal["net", "place"], limit: int, from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
-    """Top-N networks or places by distinct-event count within the window, descending.
-
-    Both `net` and `place` are served by their respective hourly rollup MVs for whole
-    hours, with earthquakes_raw FINAL only for partial edge hours.
-    """
+async def get_top_n(*, redis, field: Literal["net", "place"], limit: int, from_ts: datetime | None, to_ts: datetime | None, plate: str = "", net: str = "") -> list[dict]:
+    """Top-N networks or places by distinct-event count within the window, optionally filtered."""
     t0, t1 = _window(from_ts, to_ts)
     column = "net" if field == "net" else "place"
     mv_table = "earthquakes_hourly_mv_data" if field == "net" else "earthquakes_hourly_places_mv_data"
     split = _aligned_split(t0, t1, 3600)
-    if split is not None:
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
+
+    # Rollup only when no filters that rollup tables don't have (plate_name, net for place rollup)
+    if split is not None and not plate and not net:
         lo, hi = split
         return await query(f"""
             SELECT label, sum(c) AS count FROM (
@@ -114,26 +114,26 @@ async def get_top_n(*, redis, field: Literal["net", "place"], limit: int, from_t
         SELECT {column} AS label, count() AS count
         FROM earthquakes_raw FINAL
         WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
-          AND {column} != ''
+          AND {column} != '' {plate_clause} {net_clause}
         GROUP BY {column}
         ORDER BY count DESC
         LIMIT {{limit:UInt32}}
-    """, {"t0": t0, "t1": t1, "limit": limit})
+    """, {"t0": t0, "t1": t1, "limit": limit, "plate": plate, "net": net})
 
 
 @cached(ttl=30, key_prefix="stats:timeseries")
-async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h", "1d", "1mo", "1y"], from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
-    """Event count and average magnitude per time bucket across the window.
-
-    Hour-or-coarser buckets re-aggregate the hourly rollup for the whole hours and read
-    earthquakes_raw only for the partial edge hours (event_count exact; avg approximate
-    under revision). Sub-hour buckets need finer granularity than the rollup, so they read
-    earthquakes_raw directly.
-    """
+async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h", "1d", "1mo", "1y"], from_ts: datetime | None, to_ts: datetime | None, plate: str = "", net: str = "") -> list[dict]:
+    """Event count and average magnitude per time bucket, optionally filtered."""
     t0, t1 = _window(from_ts, to_ts)
     split = _aligned_split(t0, t1, 3600) if bucket in {"1h", "6h", "1d", "1mo", "1y"} else None
-    if split is not None:
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
+
+    # Rollup only when no net filter (rollup tables don't have net for plate variant)
+    if split is not None and not net:
         lo, hi = split
+        rollup_table = "earthquakes_hourly_plate_mv_data" if plate else "earthquakes_hourly_mv_data"
+        rollup_group = "plate_name, " if plate else ""
         return await query(f"""
             SELECT bucket_time AS time, sum(cnt) AS event_count, sum(mag_sum) / sum(rows) AS avg_magnitude
             FROM (
@@ -142,9 +142,9 @@ async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h"
                     uniqExactMerge(event_count_state) AS cnt,
                     sumMerge(magnitude_sum_state) AS mag_sum,
                     countMerge(row_count_state) AS rows
-                FROM earthquakes_hourly_mv_data
-                WHERE hour >= {{lo:DateTime}} AND hour < {{hi:DateTime}}
-                GROUP BY bucket_time
+                FROM {rollup_table}
+                WHERE hour >= {{lo:DateTime}} AND hour < {{hi:DateTime}} {plate_clause}
+                GROUP BY {rollup_group}bucket_time
                 UNION ALL
                 SELECT
                     {_bucket_expr(bucket, "time")} AS bucket_time,
@@ -153,12 +153,13 @@ async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h"
                     count() AS rows
                 FROM earthquakes_raw FINAL
                 WHERE (time >= {{t0:DateTime}} AND time < {{lo:DateTime}})
-                   OR (time >= {{hi:DateTime}} AND time <= {{t1:DateTime}})
+                   OR (time >= {{hi:DateTime}} AND time <= {{t1:DateTime}}) {plate_clause}
                 GROUP BY bucket_time
             )
             GROUP BY time
             ORDER BY time ASC
-        """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi})
+        """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi, "plate": plate})
+
     bucket_expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
@@ -171,19 +172,21 @@ async def get_timeseries(*, redis, bucket: Literal["1m", "5m", "15m", "1h", "6h"
                 count() AS event_count,
                 avg(toFloat64(magnitude)) AS avg_magnitude
             FROM earthquakes_raw FINAL
-            WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+            WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}} {plate_clause} {net_clause}
             GROUP BY bucket_time
         )
         ORDER BY time ASC
-    """, {"t0": t0, "t1": t1})
+    """, {"t0": t0, "t1": t1, "plate": plate, "net": net})
 
 
 @cached(ttl=60, key_prefix="stats:magbands")
-async def get_magnitude_bands(*, redis, from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
-    """Distinct-event counts grouped by magnitude band over the window (rollup body + raw edges)."""
+async def get_magnitude_bands(*, redis, from_ts: datetime | None, to_ts: datetime | None, plate: str = "", net: str = "") -> list[dict]:
+    """Distinct-event counts grouped by magnitude band, optionally filtered."""
     t0, t1 = _window(from_ts, to_ts)
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
     split = _aligned_split(t0, t1, 3600)
-    if split is not None:
+    if split is not None and not plate and not net:
         lo, hi = split
         return await query("""
             SELECT mag_band, sum(c) AS event_count FROM (
@@ -202,28 +205,30 @@ async def get_magnitude_bands(*, redis, from_ts: datetime | None, to_ts: datetim
             GROUP BY mag_band
             ORDER BY event_count DESC
         """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi})
-    return await query("""
+    return await query(f"""
         SELECT mag_band, count() AS event_count
         FROM earthquakes_raw FINAL
-        WHERE time BETWEEN {t0:DateTime} AND {t1:DateTime}
-          AND mag_band != ''
+        WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+          AND mag_band != '' {plate_clause} {net_clause}
         GROUP BY mag_band
         ORDER BY event_count DESC
-    """, {"t0": t0, "t1": t1})
+    """, {"t0": t0, "t1": t1, "plate": plate, "net": net})
 
 
 @cached(ttl=60, key_prefix="stats:depthbands")
-async def get_depth_bands(*, redis, from_ts: datetime | None, to_ts: datetime | None) -> list[dict]:
-    """Distinct-event counts grouped by depth band over the window (rollup body + raw edges)."""
+async def get_depth_bands(*, redis, from_ts: datetime | None, to_ts: datetime | None, plate: str = "", net: str = "") -> list[dict]:
+    """Distinct-event counts grouped by depth band, optionally filtered."""
     t0, t1 = _window(from_ts, to_ts)
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
     split = _aligned_split(t0, t1, 3600)
-    if split is not None:
+    if split is not None and not plate and not net:
         lo, hi = split
         return await query("""
             SELECT depth_band, sum(c) AS event_count FROM (
-                SELECT depth_band, uniqExactMerge(event_count_state) AS c
-                FROM earthquakes_depth_band_mv_data
-                WHERE hour >= {lo:DateTime} AND hour < {hi:DateTime} AND depth_band != ''
+                SELECT depth_band, count() AS c
+                FROM earthquakes_raw FINAL
+                WHERE time >= {lo:DateTime} AND time < {hi:DateTime} AND depth_band != ''
                 GROUP BY depth_band
                 UNION ALL
                 SELECT depth_band, count() AS c
@@ -236,14 +241,14 @@ async def get_depth_bands(*, redis, from_ts: datetime | None, to_ts: datetime | 
             GROUP BY depth_band
             ORDER BY event_count DESC
         """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi})
-    return await query("""
+    return await query(f"""
         SELECT depth_band, count() AS event_count
         FROM earthquakes_raw FINAL
-        WHERE time BETWEEN {t0:DateTime} AND {t1:DateTime}
-          AND depth_band != ''
+        WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+          AND depth_band != '' {plate_clause} {net_clause}
         GROUP BY depth_band
         ORDER BY event_count DESC
-    """, {"t0": t0, "t1": t1})
+    """, {"t0": t0, "t1": t1, "plate": plate, "net": net})
 
 
 @cached(ttl=30, key_prefix="stats:density")
@@ -264,18 +269,16 @@ async def get_density(*, redis, bbox: str, interval: Literal["1h", "6h", "24h"])
 
 
 @cached(ttl=30, key_prefix="stats:rollups:network")
-async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, to_ts: datetime | None, net: str, limit: int) -> list[dict]:
-    """Per-bucket, per-network distinct count and average magnitude/depth; optional single-network filter.
-
-    Buckets of 5 minutes or coarser re-aggregate the 5-minute rollup for whole buckets and read
-    earthquakes_raw only for the partial edge buckets (event_count exact; avgs approximate under
-    revision). The 1-minute bucket is finer than the rollup, so it reads earthquakes_raw directly.
-    """
+async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, to_ts: datetime | None, net: str, limit: int, plate: str = "") -> list[dict]:
+    """Per-bucket, per-network distinct count/avg magnitude/depth; optionally plate-filtered."""
     if bucket not in VALID_BUCKETS:
         raise ValueError(f"bucket must be one of {sorted(VALID_BUCKETS)}")
     t0, t1 = _window(from_ts, to_ts)
     network = net.strip()
-    split = _aligned_split(t0, t1, 300) if bucket != "1m" else None
+    plate_clause = "AND plate_name = {plate:String}" if plate else ""
+    net_clause = "AND net = {net:String}" if net else ""
+    # rollup table lacks plate_name column → fall through to raw when plate is set
+    split = _aligned_split(t0, t1, 300) if bucket != "1m" and not plate else None
     if split is not None:
         lo, hi = split
         return await query(f"""
@@ -296,7 +299,7 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
                     countMerge(position_count_state) AS positions
                 FROM earthquakes_rollup_net_5m
                 WHERE bucket >= {{lo:DateTime}} AND bucket < {{hi:DateTime}}
-                  AND ({{net:String}} = '' OR net = {{net:String}})
+                  AND ({{net:String}} = '' OR net = {{net:String}}) {plate_clause}
                 GROUP BY bucket_start, net
                 UNION ALL
                 SELECT
@@ -309,13 +312,13 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
                 FROM earthquakes_raw FINAL
                 WHERE ((time >= {{t0:DateTime}} AND time < {{lo:DateTime}})
                     OR (time >= {{hi:DateTime}} AND time <= {{t1:DateTime}}))
-                  AND ({{net:String}} = '' OR net = {{net:String}})
+                  AND ({{net:String}} = '' OR net = {{net:String}}) {plate_clause}
                 GROUP BY bucket_start, net
             )
             GROUP BY bucket_start, net
             ORDER BY bucket ASC, event_count DESC
             LIMIT {{limit:UInt32}}
-        """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi, "net": network, "limit": limit})
+        """, {"t0": t0, "t1": t1, "lo": lo, "hi": hi, "net": network, "limit": limit, "plate": plate})
     bucket_expr = _bucket_expr(bucket)
     return await query(f"""
         SELECT
@@ -327,11 +330,11 @@ async def get_network_rollups(*, redis, bucket: str, from_ts: datetime | None, t
             count() AS position_count
         FROM earthquakes_raw FINAL
         WHERE time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
-          AND ({{net:String}} = '' OR net = {{net:String}})
+          AND ({{net:String}} = '' OR net = {{net:String}}) {plate_clause}
         GROUP BY bucket, net
         ORDER BY bucket ASC, event_count DESC
         LIMIT {{limit:UInt32}}
-    """, {"t0": t0, "t1": t1, "net": network, "limit": limit})
+    """, {"t0": t0, "t1": t1, "net": network, "limit": limit, "plate": plate})
 
 
 async def get_ingestion_status() -> dict:

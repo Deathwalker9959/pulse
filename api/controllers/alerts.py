@@ -41,8 +41,10 @@ def _dedup_select(prefix: str = "") -> str:
 
 
 @cached(ttl=10, key_prefix="anomalies:history")
-async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
-    """Most-recent anomalies, deduped to the latest detection per (event, type); optionally time-filtered."""
+async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = None, to_ts: datetime | None = None, plate: str = "", net: str = "") -> list[dict]:
+    """Most-recent anomalies, deduped to the latest detection per (event, type); optionally filtered."""
+    plate_clause = "AND ae.plate_name = {plate:String}" if plate else ""
+    net_clause = "AND ae.source_net = {net:String}" if net else ""
     if from_ts or to_ts:
         t0 = from_ts or datetime(1970, 1, 1, tzinfo=timezone.utc)
         t1 = to_ts or datetime.now(timezone.utc)
@@ -51,20 +53,23 @@ async def get_anomaly_history(*, redis, limit: int, from_ts: datetime | None = N
             FROM (
                 SELECT {_dedup_select("ae.")}
                 FROM anomaly_events AS ae
-                WHERE ae.event_time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}}
+                WHERE ae.event_time BETWEEN {{t0:DateTime}} AND {{t1:DateTime}} {plate_clause} {net_clause}
                 GROUP BY ae.source_event_id, ae.anomaly_type
             )
             ORDER BY selected_sort_time DESC
             LIMIT {{limit:UInt32}}
-        """, {"limit": limit, "t0": t0, "t1": t1})
+        """, {"limit": limit, "t0": t0, "t1": t1, "plate": plate, "net": net})
+    plate_clause_nopfx = "AND plate_name = {plate:String}" if plate else ""
+    net_clause_nopfx = "AND source_net = {net:String}" if net else ""
     return await query(f"""
         SELECT {_OUTER_SELECT}
         FROM (
             SELECT {_dedup_select()}
             FROM anomaly_events
+            WHERE 1=1 {plate_clause_nopfx} {net_clause_nopfx}
             GROUP BY source_event_id, anomaly_type
         )
         ORDER BY selected_sort_time DESC
         LIMIT {{limit:UInt32}}
-    """, {"limit": limit})
+    """, {"limit": limit, "plate": plate, "net": net})
 
